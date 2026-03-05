@@ -1,0 +1,24 @@
+bess:
+
+  container:
+    size_mwh: 5.015
+    auxiliary_consumption_mwh_per_day: 0.300
+
+  efficiency:
+    charge_efficiency: 0.9721
+    discharge_efficiency: 0.9384
+
+  degradation:
+    type: "soh_curve"
+    file: "data/bess_soh_curve.csv"
+
+  augmentation:
+    enabled: true
+    restore_to_percent_of_year1: 100
+    minimum_augmentation_containers: 1
+    cost_per_mwh: 0.60e7
+    opex_percent_of_capex: 2.0
+
+  salvage:
+    enabled: true
+    salvage_rate_per_mwh: 0

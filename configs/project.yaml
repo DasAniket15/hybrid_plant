@@ -1,0 +1,34 @@
+project:
+  name: "Upleta_C&I"
+  location: "Gujarat"
+  currency: "INR"
+  base_year: 2026
+  project_life_years: 25
+
+simulation:
+  resolution: "hourly"
+  hours_per_year: 8760
+
+generation:
+
+  solar:
+    enabled: true
+    cuf_profile_file: "data/solar_cuf_8760.csv"
+    format: "cuf_percent"
+
+    degradation:
+      type: "efficiency_curve"
+      file: "data/solar_efficiency_curve.csv"
+
+  wind:
+    enabled: true
+    cuf_profile_file: "data/wind_cuf_8760.csv"
+    format: "cuf_percent"
+
+    degradation:
+      type: "efficiency_curve"
+      file: "data/wind_efficiency_curve.csv"
+
+load:
+  source_file: "data/load_profile_8760.csv"
+  unit: "kWh"

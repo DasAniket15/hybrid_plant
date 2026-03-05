@@ -1,0 +1,68 @@
+capex:
+
+  solar:
+    cost_per_mwp: 2.26e7
+    ac_dc_ratio: 1.398
+
+  wind:
+    cost_per_mw: 7.0e7
+
+  bess:
+    cost_per_mwh: 0.60e7
+
+  transmission:
+    cost_per_km: 1.3e7
+    length_km: 10
+
+
+opex:
+
+  solar_percent_of_capex: 1.5
+  wind_percent_of_capex: 2.5
+  bess_percent_of_capex: 2.0
+
+  land_lease:
+    base_annual_cost: 12e7
+    escalation_percent: 3
+
+  insurance_percent_of_capex: 0.2
+
+
+regulatory_charges:
+
+  ht:
+    ctu_charge_inr_per_mw_per_month: 0.0
+    stu_charge_inr_per_mw_per_month: 119172.80
+    wheeling_charge_inr_per_kwh: 0.20
+    banking_charge_inr_per_kwh: 1.50
+    sldc_charge_inr_per_mw_per_month: 1440.00
+    electricity_tax_inr_per_kwh: 0.0
+
+  lt:
+    ctu_charge_inr_per_mw_per_month: 0.0
+    stu_charge_inr_per_mw_per_month: 119172.80
+    wheeling_charge_inr_per_kwh: 0.97
+    banking_charge_inr_per_kwh: 1.50
+    sldc_charge_inr_per_mw_per_month: 1440.00
+    electricity_tax_inr_per_kwh: 0.0
+
+
+financing:
+
+  structure: "levered_structured"
+
+  debt_percent: 70
+  equity_percent: 30
+
+  debt:
+    interest_rate_percent: 8.5
+    tenure_years: 25
+    emi_structure: "fixed"
+
+  equity:
+    return_on_equity_percent: 20
+    payout_type: "fixed_annual"
+
+
+discounting:
+  wacc_percent: 10.45

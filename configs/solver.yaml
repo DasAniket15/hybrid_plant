@@ -1,0 +1,75 @@
+solver:
+
+  debug_mode: true
+
+  objective: "maximize_client_savings"
+
+  baseline:
+    type: "100_percent_discom"
+
+  decision_variables:
+
+    solar_capacity_mw:
+      min: 0
+      max: 1000
+      step: 0.5
+
+    wind_capacity_mw:
+      min: 0
+      max: 1000
+      step: 0.5
+
+    bess_initial_containers:
+      min: 0
+      max: 1000
+      step: 1
+
+    bess_charge_c_rate:
+      min: 0
+      max: 0.5
+      step: 0.01
+
+    bess_discharge_c_rate:
+      min: 0
+      max: 0.5
+      step: 0.01
+
+    ppa_capacity_mw:
+      min: 0
+      max: 1000
+      step: 0.5
+
+    dispatch_priority:
+      options:
+        - solar_first
+        - wind_first
+        - proportional
+
+    bess_charge_source:
+      options:
+        - solar_only
+        - wind_only
+        - solar_and_wind
+
+    banking_enabled:
+      options:
+        - true
+        - false
+
+    bess_augmentation_trigger_percent:
+      min: 80
+      max: 100
+      step: 0.5
+
+  annual_constraint:
+
+    type: "none"
+    minimum_percent: 0
+
+  constraints:
+
+    minimum_roe_percent: 20
+
+    hourly_re_requirement:
+      minimum_percent: 0
+      penalty_inr_per_kwh: 0

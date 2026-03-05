@@ -1,0 +1,38 @@
+regulatory:
+
+  state: "Gujarat"
+
+  connection:
+    ht_lt_split_percent: 0
+
+  losses:
+
+    ht_side:
+      ctu_percent: 0.0
+      stu_percent: 3.37
+      wheeling_percent: 7.25
+
+    lt_side:
+      ctu_percent: 0.0
+      stu_percent: 3.37
+      wheeling_percent: 7.49
+
+  banking:
+
+    enabled: true
+    settlement_cycle: "monthly"
+
+    cap_type: "percent_of_final_discom"
+    cap_percent: 30
+
+    carry_forward_limit_months: 0
+
+    energy_adjustment:
+      type: "none"        # "none" | "percent" | "absolute"
+      percent: 0.0        # used if type = percent
+      absolute_kwh: 0.0   # used if type = absolute
+
+    adjustment_application: "withdrawal"   # "withdrawal" (locked)
+
+    financial_charge:
+      type: "per_kwh"     # "none" | "per_kwh" | "per_mw_month"

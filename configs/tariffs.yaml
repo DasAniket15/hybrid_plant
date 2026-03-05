@@ -1,0 +1,16 @@
+discom:
+  tariff_type: "tod"
+  variable_only: true
+
+  tod_periods:
+    peak:
+      hours: [8, 9, 10, 11, 19, 20, 21, 22]
+      rate_inr_per_kwh: 9.18
+
+    offpeak:
+      hours: [12, 13, 14, 15]
+      rate_inr_per_kwh: 8.03
+
+    normal:
+      hours: [1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 23, 24]
+      rate_inr_per_kwh: 8.69
