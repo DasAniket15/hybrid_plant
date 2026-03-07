@@ -1,4 +1,7 @@
 import numpy as np
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import numpy as np
 
 from config_loader import load_config
 from data_loader import load_timeseries_data
@@ -8,6 +11,233 @@ from energy.year1_engine import Year1Engine
 # -------------------------------------------------
 # Helper Function
 # -------------------------------------------------
+
+def plot_stacked_dispatch(
+    data,
+    plant_results,
+    solar_capacity_mw,
+    wind_capacity_mw
+):
+
+    solar_gen = data["solar_cuf"] * solar_capacity_mw
+    wind_gen = data["wind_cuf"] * wind_capacity_mw
+    load = data["load_profile"]
+
+    solar_direct = plant_results["solar_direct_pre"]
+    wind_direct = plant_results["wind_direct_pre"]
+    discharge = plant_results["discharge_pre"]
+    charge = plant_results["charge_pre"]
+
+    hours = np.arange(len(load))
+
+    plt.figure(figsize=(14,6))
+
+    # Stacked supply
+    plt.stackplot(
+        hours,
+        solar_direct,
+        wind_direct,
+        discharge,
+        labels=[
+            "Solar Direct",
+            "Wind Direct",
+            "BESS Discharge"
+        ],
+        alpha=0.8
+    )
+
+    # Load line
+    plt.plot(hours, load, color="black", linewidth=2, label="Load")
+
+    # Charging below zero
+    plt.plot(hours, -charge, label="BESS Charging", linestyle="--")
+
+    plt.title("Stacked Dispatch Plot (8760 Hours)")
+    plt.xlabel("Hour of Year")
+    plt.ylabel("Power (MW)")
+    plt.legend(loc="upper right")
+    plt.grid(True)
+
+    plt.show()
+
+def plot_representative_week(
+    data,
+    plant_results,
+    solar_capacity_mw,
+    wind_capacity_mw,
+    week_index=20
+):
+
+    start = week_index * 168
+    end = start + 168
+
+    hours = np.arange(168)
+
+    solar_gen = data["solar_cuf"][start:end] * solar_capacity_mw
+    wind_gen = data["wind_cuf"][start:end] * wind_capacity_mw
+    load = data["load_profile"][start:end]
+
+    solar_direct = plant_results["solar_direct_pre"][start:end]
+    wind_direct = plant_results["wind_direct_pre"][start:end]
+    discharge = plant_results["discharge_pre"][start:end]
+    charge = plant_results["charge_pre"][start:end]
+    curtailment = plant_results["curtailment_pre"][start:end]
+
+    plt.figure(figsize=(14,6))
+
+    plt.stackplot(
+        hours,
+        solar_direct,
+        wind_direct,
+        discharge,
+        labels=["Solar Direct", "Wind Direct", "BESS Discharge"],
+        alpha=0.8
+    )
+
+    plt.plot(hours, load, color="black", linewidth=2, label="Load")
+
+    # Charging shown below zero
+    plt.plot(hours, -charge, label="BESS Charge", linestyle="--")
+
+    # Optional: show curtailment
+    plt.plot(hours, curtailment, label="Curtailment", linestyle=":")
+
+    plt.title(f"Representative Week Dispatch (Week {week_index})")
+    plt.xlabel("Hour of Week")
+    plt.ylabel("Power (MW)")
+    plt.legend(loc="upper right")
+    plt.grid(True)
+
+    plt.show()
+
+def plot_energy_balance_sankey(
+    data, 
+    plant_results, 
+    solar_capacity_mw, 
+    wind_capacity_mw
+):
+
+    solar_gen = np.sum(data["solar_cuf"] * solar_capacity_mw)
+    wind_gen = np.sum(data["wind_cuf"] * wind_capacity_mw)
+
+    direct = (
+        np.sum(plant_results["solar_direct_pre"])
+        + np.sum(plant_results["wind_direct_pre"])
+    )
+
+    charge = np.sum(plant_results["charge_pre"])
+    discharge = np.sum(plant_results["discharge_pre"])
+    curtail = np.sum(plant_results["curtailment_pre"])
+
+    export_pre = np.sum(plant_results["plant_export_pre"])
+    meter = np.sum(plant_results["meter_delivery"])
+
+    grid_loss = export_pre - meter
+    bess_loss = charge - discharge
+
+    labels = [
+        "Solar",
+        "Wind",
+        "Total Generation",
+        "Direct Supply",
+        "BESS Charge",
+        "Curtailment",
+        "BESS Discharge",
+        "BESS Loss",
+        "Grid Export",
+        "Grid Loss",
+        "Client Load"
+    ]
+
+    source = [
+        0, 1,      # solar/wind → generation
+        2, 2, 2,   # generation → direct/charge/curtail
+        4, 4,      # charge → discharge/loss
+        3, 6,      # direct + discharge → export
+        8, 8       # export → loss/client
+    ]
+
+    target = [
+        2, 2,
+        3, 4, 5,
+        6, 7,
+        8, 8,
+        9, 10
+    ]
+
+    value = [
+        solar_gen,
+        wind_gen,
+        direct,
+        charge,
+        curtail,
+        discharge,
+        bess_loss,
+        direct,
+        discharge,
+        grid_loss,
+        meter
+    ]
+
+    fig = go.Figure(go.Sankey(
+        node=dict(
+            pad=20,
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=labels
+        ),
+        link=dict(
+            source=source,
+            target=target,
+            value=value
+        )
+    ))
+
+    fig.update_layout(
+        title="Hybrid Plant Energy Balance",
+        font_size=12
+    )
+
+    fig.show()
+
+def plot_residual_load_curve(
+    data, 
+    plant_results, 
+    solar_capacity_mw, 
+    wind_capacity_mw
+):
+
+    solar_gen = data["solar_cuf"] * solar_capacity_mw
+    wind_gen = data["wind_cuf"] * wind_capacity_mw
+    load = data["load_profile"]
+
+    discharge = plant_results["discharge_pre"]
+    meter_delivery = plant_results["meter_delivery"]
+
+    # Residual before BESS
+    residual_raw = load - (solar_gen + wind_gen)
+
+    # Residual after BESS discharge
+    residual_after_bess = load - (solar_gen + wind_gen + discharge)
+
+    # Residual after hybrid plant (DISCOM supply)
+    residual_grid = load - meter_delivery
+
+    plt.figure(figsize=(12,6))
+
+    plt.plot(sorted(residual_raw, reverse=True), label="Residual Load (After RE)")
+    plt.plot(sorted(residual_after_bess, reverse=True), label="Residual Load (After BESS)")
+    plt.plot(sorted(residual_grid, reverse=True), label="DISCOM Supply Requirement")
+
+    plt.axhline(0, linestyle="--")
+
+    plt.title("Residual Load Duration Curve")
+    plt.xlabel("Hour Rank")
+    plt.ylabel("Power (MW)")
+    plt.legend()
+    plt.grid(True)
+
+    plt.show()
 
 def run_test_case(
     name,
@@ -80,6 +310,35 @@ def run_test_case(
 
     print("\n=========================================\n")
 
+    plot_stacked_dispatch(
+        data, 
+        plant_results,
+        solar_capacity_mw,
+        wind_capacity_mw
+    )
+
+    plot_representative_week(
+        data, 
+        plant_results, 
+        solar_capacity_mw, 
+        wind_capacity_mw, 
+        week_index=26
+    )
+
+    plot_energy_balance_sankey(
+        data,
+        plant_results,
+        solar_capacity_mw,
+        wind_capacity_mw
+    )
+
+    plot_residual_load_curve(
+        data,
+        plant_results,
+        solar_capacity_mw,
+        wind_capacity_mw
+    )
+    
 # -------------------------------------------------
 # Main Execution
 # -------------------------------------------------
@@ -113,12 +372,12 @@ if __name__ == "__main__":
 
     run_test_case(
         name="Excel Model Comparison",
-        solar_capacity_mw=389.273054572568,
+        solar_capacity_mw=195.415073395429,
         wind_capacity_mw=0.0,
-        bess_containers=327,
+        bess_containers=164,
         charge_c_rate=1.0,
         discharge_c_rate=1.0,
-        ppa_capacity_mw=134.51327003244,
+        ppa_capacity_mw=67.5256615562851,
         dispatch_priority="solar_first",
         bess_charge_source="solar_only",
     )

@@ -54,8 +54,13 @@ class PlantEngine:
 
         solar_direct = np.zeros(hours)
         wind_direct = np.zeros(hours)
+        
         discharge = np.zeros(hours)
+
         charge = np.zeros(hours)
+        solar_charge = np.zeros(hours)
+        wind_charge = np.zeros(hours)
+        
         curtailment = np.zeros(hours)
         export = np.zeros(hours)
 
@@ -110,32 +115,59 @@ class PlantEngine:
             # 1️⃣ BESS CHARGING (from surplus)
             # =====================================================
 
+            solar_surplus = max(solar_pre - solar_d, 0)
+            wind_surplus = max(wind_pre - wind_d, 0)
+
             if bess_charge_source == "solar_only":
-                surplus_pre = solar_pre - solar_d
+                available_charge = solar_surplus
+                solar_charge_pre = min(
+                    available_charge,
+                    charge_power_cap,
+                    energy_capacity - soc
+                )
+                wind_charge_pre = 0
 
             elif bess_charge_source == "wind_only":
-                surplus_pre = wind_pre - wind_d
+                available_charge = wind_surplus
+                wind_charge_pre = min(
+                    available_charge,
+                    charge_power_cap,
+                    energy_capacity - soc
+                )
+                solar_charge_pre = 0
 
-            else:
-                surplus_pre = total_pre - direct_pre
+            else:  # solar_and_wind
+                available_charge = solar_surplus + wind_surplus
+                charge_pre = min(
+                    available_charge,
+                    charge_power_cap,
+                    energy_capacity - soc
+                )
 
-            surplus_pre = max(surplus_pre, 0)
+                if available_charge > 0:
+                    solar_share = solar_surplus / available_charge
+                    wind_share = wind_surplus / available_charge
+                else:
+                    solar_share = 0
+                    wind_share = 0
 
-            charge_pre = min(
-                surplus_pre,
-                charge_power_cap,
-                energy_capacity - soc
-            )
+                solar_charge_pre = charge_pre * solar_share
+                wind_charge_pre = charge_pre * wind_share
+
+            charge_pre = solar_charge_pre + wind_charge_pre
 
             soc += charge_pre * self.charge_eff
+
             charge[h] = charge_pre
+            solar_charge[h] = solar_charge_pre
+            wind_charge[h] = wind_charge_pre
 
             # =====================================================
             # 2️⃣ CURTAILMENT
             # =====================================================
 
-            used_generation = direct_pre + charge_pre
-            curtailment[h] = max(total_pre - used_generation, 0)
+            used = solar_d + wind_d + solar_charge_pre + wind_charge_pre
+            curtailment[h] = max(total_pre - used, 0)
 
             # =====================================================
             # 3️⃣ AUX CONSUMPTION (only if SOC > 0)
@@ -227,8 +259,13 @@ class PlantEngine:
 
             "solar_direct_pre": solar_direct,
             "wind_direct_pre": wind_direct,
+            
+            "solar_charge_pre": solar_charge,
+            "wind_charge_pre": wind_charge,
+
             "discharge_pre": discharge,
             "charge_pre": charge,
+            
             "curtailment_pre": curtailment,
             "plant_export_pre": export,
 

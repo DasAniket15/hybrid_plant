@@ -100,12 +100,19 @@ class FinanceEngine:
         if required_tariff is None:
             return {"invalid_solution": True}
 
-        achieved_irr_percent = self.cashflow_model._equity_irr(
+        achieved_irr_percent = self.cashflow_model.equity_irr(
             total_capex=total_capex,
             delivered_meter_projection=projection["delivered_meter_mwh"],
             opex_projection=opex_projection,
             ppa_tariff=required_tariff,
         ) * 100
+
+        equity_cashflows = self.cashflow_model.compute_equity_cashflows(
+            total_capex,
+            projection["delivered_meter_mwh"],
+            opex_projection,
+            required_tariff,
+        )
 
         # -------------------------
         # 5️⃣ Client Economics (With Regulatory Charges)
@@ -195,10 +202,15 @@ class FinanceEngine:
             "invalid_solution": False,
             "required_ppa_tariff": required_tariff,
             "achieved_equity_irr": achieved_irr_percent,
+
             "projection": projection,
             "capex": capex,
             "opex_projection": opex_projection,
+            "equity_cashflows": equity_cashflows,
+            
             "annual_savings": savings_projection,
             "savings_npv": savings_npv,
             "objective_value": savings_npv,
+
+            "discom_tariff": self.discom_tariff
         }
