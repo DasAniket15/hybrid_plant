@@ -54,12 +54,19 @@ class PlantEngine:
 
         solar_direct = np.zeros(hours)
         wind_direct = np.zeros(hours)
-        
-        discharge = np.zeros(hours)
 
+        solar_direct_meter = np.zeros(hours)
+        wind_direct_meter = np.zeros(hours)
+        
         charge = np.zeros(hours)
         solar_charge = np.zeros(hours)
         wind_charge = np.zeros(hours)
+        charge_loss = np.zeros(hours)
+
+        discharge = np.zeros(hours)
+        discharge_loss = np.zeros(hours)
+        aux_loss = np.zeros(hours)
+        discharge_meter = np.zeros(hours)
         
         curtailment = np.zeros(hours)
         export = np.zeros(hours)
@@ -108,6 +115,8 @@ class PlantEngine:
             # Apply PPA export cap
             direct_pre = min(direct_pre, ppa_capacity_mw)
 
+            solar_d_meter = solar_d * loss_factor
+            wind_d_meter = wind_d * loss_factor
             direct_meter = direct_pre * loss_factor
             shortfall = max(load[h] - direct_meter, 0)
 
@@ -115,52 +124,45 @@ class PlantEngine:
             # 1️⃣ BESS CHARGING (from surplus)
             # =====================================================
 
-            solar_surplus = max(solar_pre - solar_d, 0)
-            wind_surplus = max(wind_pre - wind_d, 0)
-
             if bess_charge_source == "solar_only":
-                available_charge = solar_surplus
-                solar_charge_pre = min(
-                    available_charge,
-                    charge_power_cap,
-                    energy_capacity - soc
-                )
-                wind_charge_pre = 0
+                solar_surplus = solar_pre - solar_d
+                wind_surplus = 0
 
             elif bess_charge_source == "wind_only":
-                available_charge = wind_surplus
-                wind_charge_pre = min(
-                    available_charge,
-                    charge_power_cap,
-                    energy_capacity - soc
-                )
+                solar_surplus = 0
+                wind_surplus = wind_pre - wind_d
+
+            else:
+                solar_surplus = solar_pre - solar_d
+                wind_surplus = wind_pre - wind_d
+
+            total_surplus = solar_surplus + wind_surplus
+
+            charge_pre = min(
+                total_surplus,
+                charge_power_cap,
+                energy_capacity - soc
+            )
+
+            # split charge sources
+            if total_surplus > 0:
+                solar_charge_pre = charge_pre * (solar_surplus / total_surplus)
+                wind_charge_pre = charge_pre * (wind_surplus / total_surplus)
+            
+            else:
                 solar_charge_pre = 0
+                wind_charge_pre = 0
 
-            else:  # solar_and_wind
-                available_charge = solar_surplus + wind_surplus
-                charge_pre = min(
-                    available_charge,
-                    charge_power_cap,
-                    energy_capacity - soc
-                )
+            solar_charge[h] = solar_charge_pre
+            wind_charge[h] = wind_charge_pre
 
-                if available_charge > 0:
-                    solar_share = solar_surplus / available_charge
-                    wind_share = wind_surplus / available_charge
-                else:
-                    solar_share = 0
-                    wind_share = 0
+            # charging loss
+            charge_loss[h] = charge_pre * (1 - self.charge_eff)
 
-                solar_charge_pre = charge_pre * solar_share
-                wind_charge_pre = charge_pre * wind_share
-
-            charge_pre = solar_charge_pre + wind_charge_pre
-
+            # SOC increase
             soc += charge_pre * self.charge_eff
 
             charge[h] = charge_pre
-            solar_charge[h] = solar_charge_pre
-            wind_charge[h] = wind_charge_pre
 
             # =====================================================
             # 2️⃣ CURTAILMENT
@@ -182,6 +184,8 @@ class PlantEngine:
 
                 aux_energy = active_containers * self.aux_per_hour
 
+                aux_loss[h] = aux_energy
+
                 soc = max(soc - aux_energy, 0)
 
             # =====================================================
@@ -202,9 +206,14 @@ class PlantEngine:
                 remaining_headroom
             )
 
-            soc -= discharge_pre
+            soc -= discharge_pre          
+                        
+            discharge_pre = discharge_pre * self.discharge_eff  # Post discharge efficiency
+            discharge_post = discharge_pre * loss_factor  # Post losses at meter
 
             discharge[h] = discharge_pre
+
+            discharge_loss[h] = discharge_pre * (1 - self.discharge_eff)
 
             # =====================================================
             # Export
@@ -214,6 +223,9 @@ class PlantEngine:
 
             solar_direct[h] = solar_d
             wind_direct[h] = wind_d
+            solar_direct_meter[h] = solar_d_meter
+            wind_direct_meter[h] = wind_d_meter
+            discharge_meter[h] = discharge_post
 
         # ======================================================
         # DEBUG ASSERTIONS
@@ -263,11 +275,18 @@ class PlantEngine:
             "solar_charge_pre": solar_charge,
             "wind_charge_pre": wind_charge,
 
-            "discharge_pre": discharge,
             "charge_pre": charge,
+            "charge_loss": charge_loss,
+            "discharge_pre": discharge,
+            "discharge_loss": discharge_loss,
+            "aux_loss": aux_loss,
             
-            "curtailment_pre": curtailment,
+            "solar_direct_meter": solar_direct_meter,
+            "wind_direct_meter": wind_direct_meter,
+            "discharge_meter": discharge_meter,
+
             "plant_export_pre": export,
+            "curtailment_pre": curtailment,
 
             "energy_capacity_mwh": energy_capacity,
             "charge_power_mw": charge_power_cap,

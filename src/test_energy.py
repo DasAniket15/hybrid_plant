@@ -110,86 +110,165 @@ def plot_representative_week(
 
     plt.show()
 
-def plot_energy_balance_sankey(
-    data, 
-    plant_results, 
-    solar_capacity_mw, 
-    wind_capacity_mw
-):
+def plot_energy_sankey(plant_results, data, solar_capacity_mw, wind_capacity_mw):
 
-    solar_gen = np.sum(data["solar_cuf"] * solar_capacity_mw)
-    wind_gen = np.sum(data["wind_cuf"] * wind_capacity_mw)
+    # ============================
+    # GENERATION
+    # ============================
 
-    direct = (
-        np.sum(plant_results["solar_direct_pre"])
-        + np.sum(plant_results["wind_direct_pre"])
-    )
+    solar_gen = np.sum(solar_capacity_mw * data["solar_cuf"])
+    wind_gen = np.sum(wind_capacity_mw * data["wind_cuf"])
+
+    solar_direct = np.sum(plant_results["solar_direct_pre"])
+    wind_direct = np.sum(plant_results["wind_direct_pre"])
+
+    solar_charge = np.sum(plant_results["solar_charge_pre"])
+    wind_charge = np.sum(plant_results["wind_charge_pre"])
+
+    curtailment = np.sum(plant_results["curtailment_pre"])
+
+    # ============================
+    # BESS FLOWS
+    # ============================
 
     charge = np.sum(plant_results["charge_pre"])
     discharge = np.sum(plant_results["discharge_pre"])
-    curtail = np.sum(plant_results["curtailment_pre"])
 
-    export_pre = np.sum(plant_results["plant_export_pre"])
-    meter = np.sum(plant_results["meter_delivery"])
+    charge_loss = np.sum(plant_results["charge_loss"])
+    discharge_loss = np.sum(plant_results["discharge_loss"])
+    aux_loss = np.sum(plant_results["aux_loss"])
 
-    grid_loss = export_pre - meter
-    bess_loss = charge - discharge
+    soc_end = plant_results["bess_end_soc_mwh"]
+
+    # ============================
+    # GRID DELIVERY
+    # ============================
+
+    solar_meter = np.sum(plant_results["solar_direct_meter"])
+    wind_meter = np.sum(plant_results["wind_direct_meter"])
+    bess_meter = np.sum(plant_results["discharge_meter"])
+
+    pre_loss_delivery = solar_direct + wind_direct + discharge
+    meter_delivery = solar_meter + wind_meter + bess_meter
+
+    grid_losses = pre_loss_delivery - meter_delivery
+
+    # ============================
+    # SANKEY NODES
+    # ============================
 
     labels = [
-        "Solar",
-        "Wind",
-        "Total Generation",
-        "Direct Supply",
-        "BESS Charge",
+
+        "Solar Generation",
+        "Wind Generation",
+
+        "Solar Direct",
+        "Wind Direct",
+
+        "Solar → BESS",
+        "Wind → BESS",
+
         "Curtailment",
+
+        "BESS Charge",
+
+        "BESS Charge Loss",
+        "Stored Energy",
+
         "BESS Discharge",
-        "BESS Loss",
-        "Grid Export",
+
+        "BESS Discharge Loss",
+        "BESS Aux Loss",
+
         "Grid Loss",
-        "Client Load"
+
+        "Solar at Meter",
+        "Wind at Meter",
+        "BESS at Meter"
     ]
 
+    # ============================
+    # SANKEY FLOWS
+    # ============================
+
     source = [
-        0, 1,      # solar/wind → generation
-        2, 2, 2,   # generation → direct/charge/curtail
-        4, 4,      # charge → discharge/loss
-        3, 6,      # direct + discharge → export
-        8, 8       # export → loss/client
+
+        # Solar generation
+        0, 0, 0,
+
+        # Wind generation
+        1, 1, 1,
+
+        # Charging inputs
+        4, 5,
+
+        # Charge → stored / loss
+        7, 7,
+
+        # Stored → discharge / aux
+        9, 9,
+
+        # Discharge → loss / grid
+        10, 10,
+
+        # Grid → meter
+        2, 3, 10
     ]
 
     target = [
-        2, 2,
-        3, 4, 5,
-        6, 7,
-        8, 8,
-        9, 10
+
+        2, 4, 6,
+        3, 5, 6,
+
+        7, 7,
+
+        8, 9,
+
+        10, 12,
+
+        11, 13,
+
+        14, 15, 16
     ]
 
-    value = [
-        solar_gen,
-        wind_gen,
-        direct,
-        charge,
-        curtail,
+    values = [
+
+        solar_direct,
+        solar_charge,
+        curtailment * solar_gen/(solar_gen + wind_gen + 1e-9),
+
+        wind_direct,
+        wind_charge,
+        curtailment * wind_gen/(solar_gen + wind_gen + 1e-9),
+
+        solar_charge,
+        wind_charge,
+
+        charge_loss,
+        charge - charge_loss,
+
         discharge,
-        bess_loss,
-        direct,
-        discharge,
-        grid_loss,
-        meter
+        aux_loss,
+
+        discharge_loss,
+        discharge - discharge_loss,
+
+        solar_meter,
+        wind_meter,
+        bess_meter
     ]
 
     fig = go.Figure(go.Sankey(
         node=dict(
             pad=20,
-            thickness=20,
+            thickness=22,
             line=dict(color="black", width=0.5),
             label=labels
         ),
         link=dict(
             source=source,
             target=target,
-            value=value
+            value=values
         )
     ))
 
@@ -251,7 +330,7 @@ def run_test_case(
     bess_charge_source,
 ):
 
-    print(f"\n================ {name} ================\n")
+    print(f"\n================ {name} ================")
 
     plant_results = energy_engine.evaluate(
         solar_capacity_mw=solar_capacity_mw,
@@ -270,8 +349,11 @@ def run_test_case(
 
     solar_direct = plant_results["solar_direct_pre"]
     wind_direct = plant_results["wind_direct_pre"]
-    discharge = plant_results["discharge_pre"]
+    solar_direct_meter = plant_results["solar_direct_meter"]
+    wind_direct_meter = plant_results["wind_direct_meter"]
     charge = plant_results["charge_pre"]
+    discharge = plant_results["discharge_pre"]
+    discharge_meter = plant_results["discharge_meter"]
     curtailment = plant_results["curtailment_pre"]
     plant_export = plant_results["plant_export_pre"]
     meter_delivery = plant_results["meter_delivery"]
@@ -288,6 +370,16 @@ def run_test_case(
     delivered_pre_loss = np.sum(plant_export)
     delivered_meter = np.sum(meter_delivery)
     total_loss = delivered_pre_loss - delivered_meter
+    print(f"================ Plant Details ================\n")
+
+    print("Solar Capacity (MW):", round(solar_capacity_mw, 2))
+    print("Wind Capacity (MW):", round(wind_capacity_mw, 2))
+    print("BESS Containers:", bess_containers)
+    print("BESS Energy Capacity (MWh):", round(plant_results["energy_capacity_mwh"], 2))
+    print("Charge Power Cap (MW):", round(plant_results["charge_power_mw"], 2))
+    print("Discharge Power Cap (MW):", round(plant_results["discharge_power_mw"], 2))
+
+    print(f"\n================ Pre-Losses (Bus-Bar) ================\n")
 
     print("Raw Generation (MWh):", round(raw_generation, 2))
     print("Solar Direct (MWh):", round(np.sum(solar_direct), 2))
@@ -295,13 +387,15 @@ def run_test_case(
     print("BESS Charge (MWh):", round(np.sum(charge), 2))
     print("BESS Discharge (MWh):", round(np.sum(discharge), 2))
     print("Delivered Pre-Loss (MWh):", round(delivered_pre_loss, 2))
+
+    print(f"\n================ Post-Losses (At Meter) ================\n")
+
+    print("Solar Direct At Meter (MWh):", round(np.sum(solar_direct_meter), 2))
+    print("Wind Direct At Meter (MWh):", round(np.sum(wind_direct_meter), 2))
+    print("BESS Discharge At Meter (MWh):", round(np.sum(discharge_meter), 2))
     print("Delivered At Meter (MWh):", round(delivered_meter, 2))
     print("Total Grid Loss (MWh):", round(total_loss, 2))
     print("Curtailment (MWh):", round(np.sum(curtailment), 2))
-
-    print("BESS Energy Capacity (MWh):", round(plant_results["energy_capacity_mwh"], 2))
-    print("Charge Power Cap (MW):", round(plant_results["charge_power_mw"], 2))
-    print("Discharge Power Cap (MW):", round(plant_results["discharge_power_mw"], 2))
     print("End of year BESS SOC (MWh):", round(plant_results["bess_end_soc_mwh"], 2))
 
     if delivered_pre_loss > 0:
@@ -310,6 +404,7 @@ def run_test_case(
 
     print("\n=========================================\n")
 
+    """
     plot_stacked_dispatch(
         data, 
         plant_results,
@@ -324,21 +419,21 @@ def run_test_case(
         wind_capacity_mw, 
         week_index=26
     )
-
-    plot_energy_balance_sankey(
-        data,
-        plant_results,
-        solar_capacity_mw,
+    """
+    plot_energy_sankey(
+        plant_results, 
+        data, 
+        solar_capacity_mw, 
         wind_capacity_mw
     )
-
+    """
     plot_residual_load_curve(
         data,
         plant_results,
         solar_capacity_mw,
         wind_capacity_mw
     )
-    
+    """
 # -------------------------------------------------
 # Main Execution
 # -------------------------------------------------
