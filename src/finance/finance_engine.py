@@ -1,51 +1,49 @@
-import numpy as np
-import numpy_financial as npf
-
-from .capex_model import CapexModel
-from .opex_model import OpexModel
-from .cashflow_model import CashflowModel
-from .energy_projection import EnergyProjection
+from .capex_model          import CapexModel
+from .opex_model           import OpexModel
+from .energy_projection    import EnergyProjection
+from .lcoe_model           import LCOEModel
+from .landed_tariff_model  import LandedTariffModel
+from .savings_model        import SavingsModel
 
 
 class FinanceEngine:
+    """
+    Top-level orchestrator for the LCOE-based finance engine.
+
+    ── PIPELINE ─────────────────────────────────────────────────────────
+
+        1. CAPEX           → total project capital cost breakdown
+        2. OPEX            → 25-year annual OPEX projection
+        3. Energy          → 25-year busbar + meter energy (degraded)
+        4. LCOE            → NPV(costs) / NPV(busbar energy)
+        5. Landed Tariff   → LCOE + regulatory charges (annual series)
+        6. Savings         → client savings vs. 100% DISCOM baseline
+
+    ── INPUTS ───────────────────────────────────────────────────────────
+        year1_results      : dict from Year1Engine.evaluate()
+        solar_capacity_mw  : float (AC MW)
+        wind_capacity_mw   : float (AC MW)
+        ppa_capacity_mw    : float (contracted MW)
+
+    ── PRIMARY OUTPUTS ──────────────────────────────────────────────────
+        lcoe_inr_per_kwh
+        landed_tariff_series     (annual, Rs/kWh)
+        annual_savings_year1
+        savings_npv
+        + full breakdown dicts for all intermediate results
+    """
 
     def __init__(self, config, data):
-
         self.config = config
-        self.data = data
+        self.data   = data
 
-        self.capex_model = CapexModel(config)
-        self.opex_model = OpexModel(config)
-        self.cashflow_model = CashflowModel(config)
+        self.capex_model         = CapexModel(config)
+        self.opex_model          = OpexModel(config)
+        self.lcoe_model          = LCOEModel(config)
+        self.landed_tariff_model = LandedTariffModel(config)
+        self.savings_model       = SavingsModel(config, data)
 
-        self.project_life = config.project["project"]["project_life_years"]
-        self.wacc = config.finance["discounting"]["wacc_percent"] / 100
-
-        self.discom_tariff = self._get_flat_discom_tariff()
-
-    # -------------------------------------------------
-    # DISCOM Tariff (Weighted Avg ToD)
-    # -------------------------------------------------
-
-    def _get_flat_discom_tariff(self):
-
-        tod_periods = self.config.tariffs["discom"]["tod_periods"]
-
-        total_weighted = 0
-        total_hours = 0
-
-        for period in tod_periods.values():
-            rate = period["rate_inr_per_kwh"]
-            hours = len(period["hours"])
-
-            total_weighted += rate * hours
-            total_hours += hours
-
-        return total_weighted / total_hours
-
-    # -------------------------------------------------
-    # Main Evaluation
-    # -------------------------------------------------
+    # ------------------------------------------------------------------
 
     def evaluate(
         self,
@@ -53,164 +51,95 @@ class FinanceEngine:
         solar_capacity_mw,
         wind_capacity_mw,
         ppa_capacity_mw,
-        target_irr_percent,
     ):
+        """
+        Run the full finance pipeline for a given plant configuration.
 
-        # -------------------------
-        # 1️⃣ Energy Projection
-        # -------------------------
+        Parameters
+        ----------
+        year1_results      : dict  — output of Year1Engine.evaluate()
+        solar_capacity_mw  : float — AC solar capacity (MW)
+        wind_capacity_mw   : float — wind capacity (MW)
+        ppa_capacity_mw    : float — contracted PPA capacity (MW)
 
-        projection = EnergyProjection(
-            self.config,
-            self.data,
-            year1_results,
-            solar_capacity_mw,
-            wind_capacity_mw,
-        ).project()
+        Returns
+        -------
+        dict — full finance results
+        """
 
-        # -------------------------
-        # 2️⃣ CAPEX
-        # -------------------------
- 
+        bess_mwh = float(year1_results["energy_capacity_mwh"])
+
+        # ── 1. CAPEX ─────────────────────────────────────────────────
         capex = self.capex_model.compute(
-            solar_capacity_mw,
-            wind_capacity_mw,
-            year1_results["energy_capacity_mwh"],
+            solar_capacity_mw  = solar_capacity_mw,
+            wind_capacity_mw   = wind_capacity_mw,
+            bess_energy_capacity_mwh = bess_mwh,
         )
-
         total_capex = capex["total_capex"]
 
-        # -------------------------
-        # 3️⃣ OPEX
-        # -------------------------
-
-        opex_projection = self.opex_model.compute(total_capex)
-
-        # -------------------------
-        # 4️⃣ Solve Required Tariff (IRR Constraint)
-        # -------------------------
-
-        required_tariff = self.cashflow_model.solve_tariff_for_target_irr(
-            total_capex=total_capex,
-            delivered_meter_projection=projection["delivered_meter_mwh"],
-            opex_projection=opex_projection,
-            target_irr_percent=target_irr_percent,
+        # ── 2. OPEX projection ────────────────────────────────────────
+        opex_projection, opex_breakdown = self.opex_model.compute(
+            solar_capacity_mw = solar_capacity_mw,
+            wind_capacity_mw  = wind_capacity_mw,
+            bess_energy_mwh   = bess_mwh,
+            total_capex       = total_capex,
         )
 
-        if required_tariff is None:
-            return {"invalid_solution": True}
+        # ── 3. Energy projection ──────────────────────────────────────
+        # loss_factor is taken directly from year1_results (computed by
+        # GridInterface) to ensure perfect consistency with the energy engine.
+        loss_factor = float(year1_results["loss_factor"])
 
-        achieved_irr_percent = self.cashflow_model.equity_irr(
-            total_capex=total_capex,
-            delivered_meter_projection=projection["delivered_meter_mwh"],
-            opex_projection=opex_projection,
-            ppa_tariff=required_tariff,
-        ) * 100
+        projection = EnergyProjection(
+            config             = self.config,
+            data               = self.data,
+            year1_results      = year1_results,
+            solar_capacity_mw  = solar_capacity_mw,
+            wind_capacity_mw   = wind_capacity_mw,
+            loss_factor        = loss_factor,
+        ).project()
 
-        equity_cashflows = self.cashflow_model.compute_equity_cashflows(
-            total_capex,
-            projection["delivered_meter_mwh"],
-            opex_projection,
-            required_tariff,
+        busbar_mwh = projection["delivered_pre_mwh"]    # for LCOE denominator
+        meter_mwh  = projection["delivered_meter_mwh"]  # for savings
+
+        # ── 4. LCOE ──────────────────────────────────────────────────
+        lcoe_result = self.lcoe_model.compute(
+            total_capex                  = total_capex,
+            opex_projection              = opex_projection,
+            busbar_energy_mwh_projection = busbar_mwh,
+        )
+        lcoe  = lcoe_result["lcoe_inr_per_kwh"]
+        wacc  = lcoe_result["wacc"]
+
+        # ── 5. Landed tariff (annual series) ─────────────────────────
+        landed_result = self.landed_tariff_model.compute(
+            lcoe_inr_per_kwh            = lcoe,
+            ppa_capacity_mw             = ppa_capacity_mw,
+            meter_energy_mwh_projection = meter_mwh,
         )
 
-        # -------------------------
-        # 5️⃣ Client Economics (With Regulatory Charges)
-        # -------------------------
-
-        annual_load_mwh = np.sum(self.data["load_profile"])
-        baseline_cost = annual_load_mwh * 1000 * self.discom_tariff
-
-        reg_cfg = self.config.finance["regulatory_charges"]
-        ht_percent = self.config.regulatory["regulatory"]["connection"]["ht_lt_split_percent"]
-        lt_percent = 100 - ht_percent
-
-        # Capacity-based charges (₹/MW/month)
-        ctu_charge = (
-            ht_percent / 100 * reg_cfg["ht"]["ctu_charge_inr_per_mw_per_month"]
-            + lt_percent / 100 * reg_cfg["lt"]["ctu_charge_inr_per_mw_per_month"]
+        # ── 6. Client savings ─────────────────────────────────────────
+        savings_result = self.savings_model.compute(
+            landed_tariff_series        = landed_result["landed_tariff_series"],
+            meter_energy_mwh_projection = meter_mwh,
+            wacc                        = wacc,
         )
 
-        stu_charge = (
-            ht_percent / 100 * reg_cfg["ht"]["stu_charge_inr_per_mw_per_month"]
-            + lt_percent / 100 * reg_cfg["lt"]["stu_charge_inr_per_mw_per_month"]
-        )
-
-        sldc_charge = (
-            ht_percent / 100 * reg_cfg["ht"]["sldc_charge_inr_per_mw_per_month"]
-            + lt_percent / 100 * reg_cfg["lt"]["sldc_charge_inr_per_mw_per_month"]
-        )
-
-        annual_capacity_charge = (
-            (ctu_charge + stu_charge + sldc_charge)
-            * ppa_capacity_mw
-            * 12
-        )
-
-        # Energy-based charges (₹/kWh)
-        wheeling_charge = (
-            ht_percent / 100 * reg_cfg["ht"]["wheeling_charge_inr_per_kwh"]
-            + lt_percent / 100 * reg_cfg["lt"]["wheeling_charge_inr_per_kwh"]
-        )
-
-        electricity_tax = (
-            ht_percent / 100 * reg_cfg["ht"]["electricity_tax_inr_per_kwh"]
-            + lt_percent / 100 * reg_cfg["lt"]["electricity_tax_inr_per_kwh"]
-        )
-
-        # Banking charge placeholder (future)
-        banking_charge = (
-            ht_percent / 100 * reg_cfg["ht"]["banking_charge_inr_per_kwh"]
-            + lt_percent / 100 * reg_cfg["lt"]["banking_charge_inr_per_kwh"]
-        )
-
-        savings_projection = []
-        hybrid_cost_projection = []
-
-        for year in range(self.project_life):
-
-            re_energy = projection["delivered_meter_mwh"][year]
-            residual_discom = annual_load_mwh - re_energy
-
-            energy_based_charges = (
-                re_energy * 1000 * (wheeling_charge + electricity_tax)
-            )
-
-            # Banking not implemented yet → 0 placeholder
-            banking_cost = 0
-
-            hybrid_cost = (
-                re_energy * 1000 * required_tariff
-                + energy_based_charges
-                + annual_capacity_charge
-                + banking_cost
-                + residual_discom * 1000 * self.discom_tariff
-            )
-
-            savings = baseline_cost - hybrid_cost
-
-            savings_projection.append(savings)
-            hybrid_cost_projection.append(hybrid_cost)
-
-        savings_npv = npf.npv(self.wacc, savings_projection)
-
-        # -------------------------
-        # Return Structured Output
-        # -------------------------
-
+        # ── Return ────────────────────────────────────────────────────
         return {
-            "invalid_solution": False,
-            "required_ppa_tariff": required_tariff,
-            "achieved_equity_irr": achieved_irr_percent,
+            # ── Primary outputs ───────────────────────────────────────
+            "lcoe_inr_per_kwh":       lcoe,
+            "landed_tariff_series":   landed_result["landed_tariff_series"],
+            "annual_savings_year1":   savings_result["annual_savings_year1"],
+            "savings_npv":            savings_result["savings_npv"],
 
-            "projection": projection,
-            "capex": capex,
-            "opex_projection": opex_projection,
-            "equity_cashflows": equity_cashflows,
-            
-            "annual_savings": savings_projection,
-            "savings_npv": savings_npv,
-            "objective_value": savings_npv,
-
-            "discom_tariff": self.discom_tariff
+            # ── Supporting outputs ────────────────────────────────────
+            "wacc":                   wacc,
+            "capex":                  capex,
+            "opex_projection":        opex_projection,
+            "opex_breakdown":         opex_breakdown,
+            "energy_projection":      projection,
+            "lcoe_breakdown":         lcoe_result,
+            "landed_tariff_breakdown": landed_result,
+            "savings_breakdown":      savings_result,
         }

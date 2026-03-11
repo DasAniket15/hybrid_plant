@@ -17,15 +17,36 @@ capex:
 
 opex:
 
-  solar_percent_of_capex: 1.5
-  wind_percent_of_capex: 2.5
-  bess_percent_of_capex: 2.0
+  solar:
+    rate_lakh_per_mwp: 1.00        # Rs Lakh per DC MWp
+    escalation_percent: 2.0
+
+  wind:
+    rate_lakh_per_mw: 12.00        # Rs Lakh per MW
+    escalation_percent: 2.0
+
+  bess:
+    rate_lakh_per_mwh: 0.60        # Rs Lakh per MWh
+    escalation_percent: 0.0
+
+  solar_transmission:
+    rate_lakh_per_mwp: 0.08        # Rs Lakh per DC MWp
+    escalation_percent: 0.0
+
+  wind_transmission:
+    rate_lakh_per_mw: 0.08         # Rs Lakh per MW
+    escalation_percent: 0.0
 
   land_lease:
-    base_annual_cost: 12e7
-    escalation_percent: 3
+    base_monthly_cost_crore: 1.00  # Rs Crore per month
+    escalation_percent: 3.0
 
-  insurance_percent_of_capex: 0.2
+  insurance:
+    percent_of_total_capex: 0.2    # % of total CAPEX
+    escalation_percent: 0.0
+
+  augmentation:
+    enabled: false                  # future scope
 
 
 regulatory_charges:
@@ -34,7 +55,7 @@ regulatory_charges:
     ctu_charge_inr_per_mw_per_month: 0.0
     stu_charge_inr_per_mw_per_month: 119172.80
     wheeling_charge_inr_per_kwh: 0.20
-    banking_charge_inr_per_kwh: 1.50
+    banking_charge_inr_per_kwh: 0.00
     sldc_charge_inr_per_mw_per_month: 1440.00
     electricity_tax_inr_per_kwh: 0.0
 
@@ -42,7 +63,7 @@ regulatory_charges:
     ctu_charge_inr_per_mw_per_month: 0.0
     stu_charge_inr_per_mw_per_month: 119172.80
     wheeling_charge_inr_per_kwh: 0.97
-    banking_charge_inr_per_kwh: 1.50
+    banking_charge_inr_per_kwh: 0.00
     sldc_charge_inr_per_mw_per_month: 1440.00
     electricity_tax_inr_per_kwh: 0.0
 
@@ -54,6 +75,8 @@ financing:
   debt_percent: 70
   equity_percent: 30
 
+  corporate_tax_rate_percent: 25.17   # used only for WACC computation
+
   debt:
     interest_rate_percent: 8.5
     tenure_years: 25
@@ -63,6 +86,6 @@ financing:
     return_on_equity_percent: 20
     payout_type: "fixed_annual"
 
-
-discounting:
-  wacc_percent: 10.45
+  # NOTE: WACC is computed dynamically inside the finance engine using:
+  # WACC = (debt_% x interest_rate_% x (1 - tax_rate_%)) + (equity_% x roe_%)
+  # Do not specify wacc here.
