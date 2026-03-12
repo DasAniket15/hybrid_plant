@@ -1,75 +1,119 @@
 solver:
 
-  debug_mode: true
+  debug_mode: false
 
   objective: "maximize_client_savings"
 
   baseline:
     type: "100_percent_discom"
 
+  # ─────────────────────────────────────────────────────────────────────
+  # DECISION VARIABLES
+  # ─────────────────────────────────────────────────────────────────────
+
   decision_variables:
 
+    # ── CURRENT SCOPE ─────────────────────────────────────────────────
+
     solar_capacity_mw:
+      scope: current
+      type: continuous
       min: 0
       max: 1000
       step: 0.5
 
     wind_capacity_mw:
+      scope: current
+      type: continuous
+      min: 0
+      max: 0
+      step: 0.5
+
+    ppa_capacity_mw:
+      scope: current
+      type: continuous
       min: 0
       max: 1000
       step: 0.5
 
-    bess_initial_containers:
+    bess_containers:
+      scope: current
+      type: integer
       min: 0
       max: 1000
       step: 1
 
+    # ── FUTURE SCOPE ──────────────────────────────────────────────────
+
     bess_charge_c_rate:
+      scope: future
+      type: continuous
       min: 0
       max: 0.5
       step: 0.01
+      fixed_value: 1.0         # value used while out of scope
 
     bess_discharge_c_rate:
+      scope: future
+      type: continuous
       min: 0
       max: 0.5
       step: 0.01
-
-    ppa_capacity_mw:
-      min: 0
-      max: 1000
-      step: 0.5
+      fixed_value: 1.0         # value used while out of scope
 
     dispatch_priority:
+      scope: future
+      type: categorical
       options:
         - solar_first
         - wind_first
         - proportional
+      fixed_value: solar_first  # value used while out of scope
 
     bess_charge_source:
+      scope: future
+      type: categorical
       options:
         - solar_only
         - wind_only
         - solar_and_wind
+      fixed_value: solar_only  # value used while out of scope
 
     banking_enabled:
+      scope: future
+      type: categorical
       options:
         - true
         - false
+      fixed_value: false         # value used while out of scope
 
     bess_augmentation_trigger_percent:
+      scope: future
+      type: continuous
       min: 80
       max: 100
       step: 0.5
+      fixed_value: 80.0         # value used while out of scope
 
-  annual_constraint:
-
-    type: "none"
-    minimum_percent: 0
+  # ─────────────────────────────────────────────────────────────────────
+  # CONSTRAINTS
+  # ─────────────────────────────────────────────────────────────────────
 
   constraints:
 
-    minimum_roe_percent: 20
+    minimum_savings_npv:
+      enabled: true
+      min_value: 0              # project must beat 100% DISCOM baseline
 
-    hourly_re_requirement:
+    hourly_re_requirement:      # future scope
+      enabled: false
       minimum_percent: 0
       penalty_inr_per_kwh: 0
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SOLVER SETTINGS
+  # ─────────────────────────────────────────────────────────────────────
+
+  n_trials: 1500
+  n_jobs: 1                     # parallel workers (1 = sequential)
+  random_seed: 42

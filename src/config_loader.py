@@ -46,16 +46,11 @@ def _validate(config: FullConfig):
     if config.project["simulation"]["resolution"] != "hourly":
         raise ValueError("Only hourly resolution supported.")
 
-    # 2. Annual constraint validity
-    allowed = ["none", "replacement", "cuf"]
-    if config.solver["solver"]["annual_constraint"]["type"] not in allowed:
-        raise ValueError("Invalid annual constraint type.")
-
-    # 3. Container size > 0
+    # 2. Container size > 0
     if config.bess["bess"]["container"]["size_mwh"] <= 0:
         raise ValueError("BESS container size must be positive.")
 
-    # 4. AC:DC ratio > 0
+    # 3. AC:DC ratio > 0
     if config.finance["capex"]["solar"]["ac_dc_ratio"] <= 0:
         raise ValueError("AC:DC ratio must be positive.")
 
