@@ -33,7 +33,7 @@ BENCHMARK = {
     "discharge_c_rate":  1.0,
     "ppa_capacity_mw":   67.5256615562851,
     "dispatch_priority": "solar_first",
-    "bess_charge_source":"solar_and_wind",
+    "bess_charge_source":"solar_only",
 }
 
 # Sensitivity sweep resolution (points per variable)

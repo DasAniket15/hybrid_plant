@@ -115,7 +115,7 @@ def print_section2(fi):
 # SECTION 3 — Year-1 Energy Balance
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_section3(params, y1, fi, data):
+def print_section3(params, y1, fi, data, energy_engine):
     sep("SECTION 3 — YEAR-1 ENERGY BALANCE")
 
     solar_direct_pre  = float(np.sum(y1["solar_direct_pre"]))
@@ -140,11 +140,33 @@ def print_section3(params, y1, fi, data):
     raw_solar_gen     = float(np.sum(params["solar_capacity_mw"] * data["solar_cuf"]))
     raw_wind_gen      = float(np.sum(params["wind_capacity_mw"]  * data["wind_cuf"]))
 
-    plant_export_pre = float(np.sum(y1["plant_export_pre"]))
+    # Plant CUF — re-simulate with loss_factor=1.0 to match Excel convention:
+    # dispatch is computed without grossing up load for grid losses, so
+    # plant_export_pre reflects only what is needed to serve load at busbar.
+    y1_lf1 = energy_engine.plant.simulate(
+        solar_capacity_mw  = params["solar_capacity_mw"],
+        wind_capacity_mw   = params["wind_capacity_mw"],
+        bess_containers    = params["bess_containers"],
+        charge_c_rate      = params["charge_c_rate"],
+        discharge_c_rate   = params["discharge_c_rate"],
+        ppa_capacity_mw    = params["ppa_capacity_mw"],
+        dispatch_priority  = params["dispatch_priority"],
+        bess_charge_source = params["bess_charge_source"],
+        loss_factor        = 1.0,
+    )
+    # Per-hour: min(ppa_mw, direct + discharge + curtailment)
+    # This matches the Excel model which injects any remaining surplus
+    # up to the PPA cap after direct dispatch and BESS discharge.
+    plant_cuf_numerator = float(np.sum(
+        np.minimum(
+            y1_lf1["plant_export_pre"] + y1_lf1["curtailment_pre"],
+            params["ppa_capacity_mw"]
+        )
+    ))
 
-    solar_cuf = compute_cuf(raw_solar_gen,    params["solar_capacity_mw"])
-    wind_cuf  = compute_cuf(raw_wind_gen,     params["wind_capacity_mw"])
-    plant_cuf = compute_cuf(plant_export_pre, params["ppa_capacity_mw"])
+    solar_cuf = compute_cuf(raw_solar_gen,       params["solar_capacity_mw"])
+    wind_cuf  = compute_cuf(raw_wind_gen,        params["wind_capacity_mw"])
+    plant_cuf = compute_cuf(plant_cuf_numerator, params["ppa_capacity_mw"])
 
     loss_factor = float(y1["loss_factor"])
 
@@ -482,7 +504,7 @@ if __name__ == "__main__":
     # ── Print dashboard ───────────────────────────────────────────────────────
     print_section1(params, y1, fi)
     print_section2(fi)
-    print_section3(params, y1, fi, data)
+    print_section3(params, y1, fi, data, energy_engine)
     print_section4(fi)
     print_section5(fi)
     print_section6(fi)
