@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hybrid-plant"
+version = "0.1.0"
+description = "Hybrid RE plant (Solar + Wind + BESS) financial model for C&I clients"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyyaml",
+    "optuna",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "plotly",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hybrid_plant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v"
+
+[tool.ruff]
+line-length = 100
