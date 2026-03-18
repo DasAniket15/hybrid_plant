@@ -71,8 +71,6 @@ class SolverEngine:
 
     # Fallback fixed values for future-scope variables
     _FUTURE_FIXED: dict[str, Any] = {
-        "charge_c_rate":      1.0,
-        "discharge_c_rate":   1.0,
         "dispatch_priority":  "solar_first",
         "bess_charge_source": "solar_only",
     }
@@ -93,10 +91,8 @@ class SolverEngine:
         self._solver_cfg = sv
         self._dv         = sv["decision_variables"]
 
-        # Override fixed values from YAML where present
+        # Override fixed values from YAML where present (future-scope variables only)
         for key, yaml_key in [
-            ("charge_c_rate",      "bess_charge_c_rate"),
-            ("discharge_c_rate",   "bess_discharge_c_rate"),
             ("dispatch_priority",  "dispatch_priority"),
             ("bess_charge_source", "bess_charge_source"),
         ]:
@@ -116,36 +112,70 @@ class SolverEngine:
         """Map an Optuna trial to a complete parameter set."""
         dv = self._dv
 
+        def _istep(key: str) -> int:
+            """Return int step, defaulting to 1 — guards against YAML null/zero."""
+            v = dv[key].get("step")
+            return int(v) if v is not None and int(v) > 0 else 1
+
+        def _is_current(key: str) -> bool:
+            """True if the key exists in dv AND scope == 'current'."""
+            return key in dv and dv[key].get("scope", "future") == "current"
+
         solar_mw = trial.suggest_float(
             "solar_capacity_mw",
             dv["solar_capacity_mw"]["min"],
             dv["solar_capacity_mw"]["max"],
-            step=dv["solar_capacity_mw"].get("step"),
         )
         wind_mw = trial.suggest_float(
             "wind_capacity_mw",
             dv["wind_capacity_mw"]["min"],
             dv["wind_capacity_mw"]["max"],
-            step=dv["wind_capacity_mw"].get("step"),
         )
         ppa_mw = trial.suggest_float(
             "ppa_capacity_mw",
             dv["ppa_capacity_mw"]["min"],
             dv["ppa_capacity_mw"]["max"],
-            step=dv["ppa_capacity_mw"].get("step"),
         )
         bess_containers = trial.suggest_int(
             "bess_containers",
             dv["bess_containers"]["min"],
             dv["bess_containers"]["max"],
-            step=dv["bess_containers"].get("step", 1),
+            step=_istep("bess_containers"),
         )
+
+        # C-rates: optimised when scope=current in solver.yaml; fixed otherwise.
+        # C-rates are sampled continuously (no step) to avoid a known Optuna
+        # TPE numerical issue where small step sizes over narrow ranges cause
+        # the truncated-normal computation to loop near float epsilon.
+        # The solver result is a real-valued optimum; 0.01 discretisation
+        # adds no physical value for a continuous parameter like C-rate.
+        if _is_current("bess_charge_c_rate"):
+            charge_c = trial.suggest_float(
+                "charge_c_rate",
+                dv["bess_charge_c_rate"]["min"],
+                dv["bess_charge_c_rate"]["max"],
+            )
+        else:
+            fv = dv.get("bess_charge_c_rate", {}).get("fixed_value")
+            charge_c = float(fv) if fv is not None else 0.5
+
+        if _is_current("bess_discharge_c_rate"):
+            discharge_c = trial.suggest_float(
+                "discharge_c_rate",
+                dv["bess_discharge_c_rate"]["min"],
+                dv["bess_discharge_c_rate"]["max"],
+            )
+        else:
+            fv = dv.get("bess_discharge_c_rate", {}).get("fixed_value")
+            discharge_c = float(fv) if fv is not None else 0.5
 
         return {
             "solar_capacity_mw":  solar_mw,
             "wind_capacity_mw":   wind_mw,
             "ppa_capacity_mw":    ppa_mw,
             "bess_containers":    bess_containers,
+            "charge_c_rate":      charge_c,
+            "discharge_c_rate":   discharge_c,
             **self._FUTURE_FIXED,
         }
 
@@ -202,6 +232,8 @@ class SolverEngine:
                 "wind_capacity_mw":     params["wind_capacity_mw"],
                 "ppa_capacity_mw":      params["ppa_capacity_mw"],
                 "bess_containers":      params["bess_containers"],
+                "charge_c_rate":        params["charge_c_rate"],
+                "discharge_c_rate":     params["discharge_c_rate"],
                 "bess_mwh":             float(year1["energy_capacity_mwh"]),
                 "savings_npv_cr":       round(savings_npv / 1e7, 4),
                 "annual_savings_y1_cr": round(finance["annual_savings_year1"] / 1e7, 4),
@@ -254,12 +286,25 @@ class SolverEngine:
             direction = "maximize",
             sampler   = optuna.samplers.TPESampler(seed=self._random_seed),
         )
-        study.optimize(
-            self._objective,
-            n_trials          = n_trials,
-            n_jobs            = n_jobs,
-            show_progress_bar = show_progress,
-        )
+        try:
+            study.optimize(
+                self._objective,
+                n_trials          = n_trials,
+                n_jobs            = n_jobs,
+                show_progress_bar = show_progress,
+            )
+        except KeyboardInterrupt:
+            # On Windows, QuickEdit Mode can send SIGINT on a terminal click.
+            # Catch it gracefully and return the best solution found so far,
+            # provided at least one feasible trial completed.
+            completed = len(study.trials)
+            feasible  = [t for t in study.trials if t.value is not None and t.value > -1e14]
+            if not feasible:
+                raise RuntimeError(
+                    f"Solver interrupted after {completed} trials with no feasible solution found."
+                ) from None
+            print(f"\n  [Solver] Interrupted after {completed} trials — "
+                  f"returning best of {len(feasible)} feasible trials.")
 
         # Re-run best to get full result dict
         best_params = {

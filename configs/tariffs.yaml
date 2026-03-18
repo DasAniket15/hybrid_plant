@@ -2,15 +2,46 @@ discom:
   tariff_type: "tod"
   variable_only: true
 
-  tod_periods:
-    peak:
-      hours: [8, 9, 10, 11, 19, 20, 21, 22]
-      rate_inr_per_kwh: 9.18
+  # Period hour definitions are identical for LT and HT.
+  # The blended weighted-average tariff for savings calculations is derived
+  # from ht_lt_split_percent in regulatory.yaml.
+  #
+  # Hours are 1-indexed (1 = midnight–1 am, 24 = 11 pm–midnight).
+  # Rates sourced from DISCOM tariff schedule (variable charges only,
+  # excluding contract demand charges which are billed separately).
 
-    offpeak:
-      hours: [12, 13, 14, 15]
-      rate_inr_per_kwh: 8.03
+  lt:
+    tod_periods:
+      morning_peak:
+        hours: [8, 9, 10, 11]
+        rate_inr_per_kwh: 9.182          # base 4.6 + ToU 0.45 + wheeling 0.97 + FAC 2.3 + duty 0.862
 
-    normal:
-      hours: [1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 23, 24]
-      rate_inr_per_kwh: 8.69
+      solar_offpeak:
+        hours: [12, 13, 14, 15]
+        rate_inr_per_kwh: 8.027          # base 4.6 + ToU -0.60 + wheeling 0.97 + FAC 2.3 + duty 0.757
+
+      evening_peak:
+        hours: [19, 20, 21, 22]
+        rate_inr_per_kwh: 9.182          # same as morning_peak
+
+      normal:
+        hours: [1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 23, 24]
+        rate_inr_per_kwh: 8.687          # base 4.6 + ToU 0 + wheeling 0.97 + FAC 2.3 + duty 0.817
+
+  ht:
+    tod_periods:
+      morning_peak:
+        hours: [8, 9, 10, 11]
+        rate_inr_per_kwh: 8.436458       # base 4.3 + ToU 0.45 + wheeling 0.20 + FAC 2.3 + duty 1.186458
+
+      solar_offpeak:
+        hours: [12, 13, 14, 15]
+        rate_inr_per_kwh: 7.228958       # base 4.3 + ToU -0.60 + wheeling 0.20 + FAC 2.3 + duty 1.028958
+
+      evening_peak:
+        hours: [19, 20, 21, 22]
+        rate_inr_per_kwh: 8.436458       # same as morning_peak
+
+      normal:
+        hours: [1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 23, 24]
+        rate_inr_per_kwh: 7.918958       # base 4.3 + ToU 0 + wheeling 0.20 + FAC 2.3 + duty 1.118958

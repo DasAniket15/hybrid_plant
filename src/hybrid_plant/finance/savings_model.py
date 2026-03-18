@@ -7,6 +7,12 @@ Baseline cost
 ─────────────
     baseline = annual_load_kWh × weighted-average DISCOM ToD tariff
 
+    The weighted-average tariff is a blended figure:
+        blended = (lt_fraction × lt_avg) + (ht_fraction × ht_avg)
+    where lt_fraction and ht_fraction come from ``ht_lt_split_percent`` in
+    ``regulatory.yaml`` and lt_avg / ht_avg are hour-count-weighted averages
+    over each voltage level's tod_periods in ``tariffs.yaml``.
+
 Hybrid cost (per year t)
 ────────────────────────
     hybrid_t = (RE_meter_kWh_t × landed_tariff_t)
@@ -52,18 +58,46 @@ class SavingsModel:
     # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _weighted_discom_tariff(config: FullConfig) -> float:
+    def _period_weighted_avg(periods: dict) -> float:
         """
-        Compute the load-weighted average DISCOM ToD tariff across 24 hours.
+        Hour-count-weighted average rate across a single voltage level's
+        tod_periods dict.
 
         Returns
         -------
         float  Rs / kWh
         """
-        periods = config.tariffs["discom"]["tod_periods"]
         total_weighted = sum(p["rate_inr_per_kwh"] * len(p["hours"]) for p in periods.values())
         total_hours    = sum(len(p["hours"]) for p in periods.values())
         return total_weighted / total_hours
+
+    @staticmethod
+    def _weighted_discom_tariff(config: FullConfig) -> float:
+        """
+        Compute the blended load-weighted average DISCOM ToD tariff.
+
+        The blend is driven by ``ht_lt_split_percent`` in ``regulatory.yaml``:
+            blended = (lt_fraction × lt_avg) + (ht_fraction × ht_avg)
+
+        With ``ht_lt_split_percent = 0`` (100 % LT), the result equals the
+        pure LT weighted average.
+
+        Returns
+        -------
+        float  Rs / kWh
+        """
+        ht_fraction = (
+            config.regulatory["regulatory"]["connection"]["ht_lt_split_percent"] / 100.0
+        )
+        lt_fraction = 1.0 - ht_fraction
+
+        lt_avg = SavingsModel._period_weighted_avg(
+            config.tariffs["discom"]["lt"]["tod_periods"]
+        )
+        ht_avg = SavingsModel._period_weighted_avg(
+            config.tariffs["discom"]["ht"]["tod_periods"]
+        )
+        return lt_fraction * lt_avg + ht_fraction * ht_avg
 
     def _npv(self, series: list[float], wacc: float) -> float:
         """Excel-style NPV: series[0] → Year 1, discounted at t = 1."""

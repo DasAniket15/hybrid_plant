@@ -10,6 +10,7 @@ Pipeline
   3. Extract best solution
   4. Print 7-section dashboard to stdout
   5. Save model_output.png (4-panel figure) to outputs/
+  6. Save day250_dispatch.png (BESS dispatch diagnostic) to outputs/
 
 Run
 ───
@@ -21,7 +22,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import math
 import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -29,6 +32,8 @@ from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import load_config
 from hybrid_plant.constants import CRORE_TO_RS
 from hybrid_plant.data_loader import load_timeseries_data
+from hybrid_plant.energy.grid_interface import GridInterface
+from hybrid_plant.energy.plant_engine import PlantEngine
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
 from hybrid_plant.solver.solver_engine import SolverEngine
@@ -92,6 +97,8 @@ def print_section1(params, y1, fi):
     print(f"  {'BESS energy capacity (MWh)':<38} : {round(float(y1['energy_capacity_mwh']), 2)}")
     print(f"  {'BESS charge power (MW)':<38} : {round(float(y1['charge_power_mw']), 2)}")
     print(f"  {'BESS discharge power (MW)':<38} : {round(float(y1['discharge_power_mw']), 2)}")
+    print(f"  {'BESS charge C-rate':<38} : {round(params['charge_c_rate'], 4)}")
+    print(f"  {'BESS discharge C-rate':<38} : {round(params['discharge_c_rate'], 4)}")
     print(f"  {'PPA capacity (MW)':<38} : {round(params['ppa_capacity_mw'], 2)}")
     print(f"  {'Dispatch priority':<38} : {params['dispatch_priority']}")
     print(f"  {'BESS charge source':<38} : {params['bess_charge_source']}")
@@ -166,7 +173,7 @@ def print_section3(params, y1, fi, data, energy_engine):
     print(f"  {'Wind Direct (MWh)':<38} : {round(wind_direct_pre, 1)}")
     print(f"  {'BESS Discharge (MWh)':<38} : {round(discharge_pre, 1)}")
     print(f"  {'Total Busbar Delivery (MWh)':<38} : {round(total_busbar, 1)}")
-    print(f"  {'Curtailment (MWh)':<38} : {round(curtailment, 1)}")
+    print(f"  {'Excess Energy (MWh)':<38} : {round(curtailment, 1)}")
     print(f"\n  {'── METER (Post-Loss)'}")
     print(f"  {'Solar Direct at Meter (MWh)':<38} : {round(solar_direct_m, 1)}")
     print(f"  {'Wind Direct at Meter (MWh)':<38} : {round(wind_direct_m, 1)}")
@@ -386,8 +393,279 @@ def plot_dashboard(params, y1, fi, data, output_path: Path) -> None:
 
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"\n  Dashboard plot saved → {output_path}")
-    plt.show()
+    plt.close()
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Day-250 dispatch diagnostic plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
+    """
+    Four-panel BESS dispatch diagnostic for Day 250.
+
+    Panels
+    ──────
+    1. Load coverage  — solar direct, BESS discharge, DISCOM shortfall (stacked)
+    2. Charge / discharge flows (busbar)
+    3. SOC trajectory with rsrv_evening, rsrv_morning_next, rsrv_fwd_evening
+    4. DISCOM tariff rate per hour (context)
+    """
+    DAY = 250
+
+    C_SOLAR    = "#F4A623"
+    C_DISC     = "#4A90D9"
+    C_CHG      = "#7ED321"
+    C_SHORTFL  = "#D0021B"
+    C_SOC      = "#9B59B6"
+    C_RSRV_E   = "#E74C3C"
+    C_RSRV_M   = "#3498DB"
+    C_RSRV_FWD = "#E67E22"
+
+    PERIOD_ALPHA  = 0.10
+    PERIOD_COLORS = {
+        "morning_peak":  "#FF6B6B",
+        "solar_offpeak": "#FFD93D",
+        "evening_peak":  "#FF6B6B",
+        "normal":        "#AAAAAA",
+    }
+    RATES = {
+        "morning_peak":  9.182,
+        "solar_offpeak": 8.027,
+        "evening_peak":  9.182,
+        "normal":        8.687,
+    }
+
+    lf  = GridInterface(config).loss_factor
+    pe  = PlantEngine(config, data)
+    res = pe.simulate(loss_factor=lf, **params)
+    load = data["load_profile"]
+
+    s = DAY * 24
+    hods = np.arange(24)
+
+    solar_d = res["solar_direct_pre"][s:s+24]
+    disc    = res["discharge_pre"][s:s+24]
+    chg     = res["charge_pre"][s:s+24]
+    load_d  = load[s:s+24]
+
+    solar_meter = solar_d * lf
+    disc_meter  = disc * lf          # discharge_pre is already post-efficiency; applying eff twice was wrong
+    shortfall   = np.maximum(load_d - solar_meter - disc_meter, 0.0)
+
+    # ── Pre-compute RE-only shortfall for reservation planner ─────────────
+    re_shortfall = np.empty(len(load))
+    for _h in range(len(load)):
+        _sv  = params["solar_capacity_mw"] * data["solar_cuf"][_h]
+        _req = load[_h] / lf
+        _sd  = min(_sv, _req)
+        _direct = min(_sd, params["ppa_capacity_mw"])
+        re_shortfall[_h] = max(load[_h] - _direct * lf, 0.0)
+
+    container_size   = config.bess["bess"]["container"]["size_mwh"]
+    charge_eff       = pe.charge_eff
+    discharge_eff    = pe.discharge_eff
+    aux_per_hour     = config.bess["bess"]["container"]["auxiliary_consumption_mwh_per_day"] / 24
+    energy_cap       = params["bess_containers"] * container_size
+    charge_pw_cap    = params["charge_c_rate"]    * energy_cap
+    discharge_pw_cap = params["discharge_c_rate"] * energy_cap
+
+    # Fast-forward SOC to start of day 250
+    soc = 0.0
+    for h in range(s):
+        soc += res["charge_pre"][h] * charge_eff
+        if soc > 0:
+            ac  = min(params["bess_containers"], math.ceil(soc / container_size))
+            soc = max(soc - ac * aux_per_hour, 0.0)
+        soc -= res["discharge_pre"][h] / discharge_eff
+        soc  = max(soc, 0.0)
+
+    # Replay day 250 recording SOC + reservations at start of each hour
+    soc_arr      = np.zeros(25)
+    rsrv_eve_arr = np.zeros(24)
+    rsrv_morn_arr= np.zeros(24)
+    rsrv_fwd_arr = np.zeros(24)
+
+    rsrv_evening      = 0.0
+    rsrv_morning_next = 0.0
+    rsrv_fwd_evening  = 0.0
+
+    for i in range(24):
+        h   = s + i
+        hod = i
+        day_start_h = h - hod
+
+        soc_arr[i] = soc
+
+        if hod == 11:
+            rsrv_morning_next = 0.0
+            eve_idx = [day_start_h + ep for ep in [18,19,20,21] if day_start_h+ep < len(load)]
+            if eve_idx and energy_cap > 0:
+                soc_est = soc
+                for _cp in [11,12,13,14]:
+                    _ci = day_start_h + _cp
+                    if _ci >= len(load): break
+                    _c = min(re_shortfall[_ci], charge_pw_cap,
+                             max(energy_cap - soc_est, 0.0)) * charge_eff
+                    soc_est = min(soc_est + _c, energy_cap)
+                eve_need = sum(re_shortfall[fh]/(discharge_eff*lf) for fh in eve_idx)
+                eve_need = min(eve_need, discharge_pw_cap * len(eve_idx))
+                rsrv_fwd_evening = min(eve_need, soc_est)
+
+        elif hod == 15:
+            rsrv_fwd_evening = 0.0
+            eve_idx  = [day_start_h + ep for ep in [18,19,20,21] if day_start_h+ep < len(load)]
+            morn_idx = [day_start_h+24+mp for mp in [7,8,9,10]   if day_start_h+24+mp < len(load)]
+            eve_need  = sum(re_shortfall[fh]/(discharge_eff*lf) for fh in eve_idx) if eve_idx else 0.0
+            eve_need  = min(eve_need, discharge_pw_cap * max(len(eve_idx),1))
+            rsrv_evening = min(eve_need, soc)
+            morn_need = sum(re_shortfall[fh]/(discharge_eff*lf) for fh in morn_idx) if morn_idx else 0.0
+            morn_need = min(morn_need, discharge_pw_cap * max(len(morn_idx),1))
+            rsrv_morning_next = min(morn_need, max(soc - rsrv_evening, 0.0))
+
+        rsrv_eve_arr[i]  = rsrv_evening
+        rsrv_morn_arr[i] = rsrv_morning_next
+        rsrv_fwd_arr[i]  = rsrv_fwd_evening
+
+        soc += chg[i] * charge_eff
+        if soc > 0:
+            ac  = min(params["bess_containers"], math.ceil(soc / container_size))
+            soc = max(soc - ac * aux_per_hour, 0.0)
+        disc_raw = disc[i] / discharge_eff
+        if hod in pe.morning_peak_hods:
+            rsrv_morning_next = max(rsrv_morning_next - disc_raw, 0.0)
+        elif hod in pe.evening_peak_hods:
+            rsrv_evening = max(rsrv_evening - disc_raw, 0.0)
+        soc -= disc_raw
+        soc  = max(soc, 0.0)
+
+    soc_arr[24] = soc
+
+    def period_of(h):
+        if h in pe.morning_peak_hods:  return "morning_peak"
+        if h in pe.evening_peak_hods:  return "evening_peak"
+        if h in pe.solar_offpeak_hods: return "solar_offpeak"
+        return "normal"
+
+    periods = [period_of(h) for h in range(24)]
+    rates   = [RATES[p] for p in periods]
+
+    def shade_periods(ax):
+        for i, p in enumerate(periods):
+            ax.axvspan(i - 0.5, i + 0.5,
+                       color=PERIOD_COLORS[p], alpha=PERIOD_ALPHA, zorder=0)
+        for trigger in [10.5, 14.5]:
+            ax.axvline(trigger, color="#555555", lw=1.2, ls="--", alpha=0.6, zorder=1)
+
+    x     = np.arange(24)
+    x_soc = np.arange(25) - 0.5
+
+    fig, axes = plt.subplots(
+        4, 1, figsize=(14, 14),
+        gridspec_kw={"height_ratios": [2.5, 2, 2.5, 1.2]},
+        sharex=True,
+    )
+    fig.suptitle(
+        f"Day {DAY} — ToD-Aware BESS Dispatch\n"
+        f"Solar {params['solar_capacity_mw']:.0f} MW  |  "
+        f"BESS {params['bess_containers']} × {container_size} MWh = {energy_cap:.0f} MWh  |  "
+        f"Charge C-rate {params['charge_c_rate']}  |  Discharge C-rate {params['discharge_c_rate']}",
+        fontsize=13, fontweight="bold", y=0.99,
+    )
+
+    # Panel 1 — load coverage
+    ax = axes[0]
+    shade_periods(ax)
+    ax.bar(x, shortfall,   color=C_SHORTFL, label="DISCOM draw",    alpha=0.85, zorder=3)
+    ax.bar(x, disc_meter,  color=C_DISC,    label="BESS discharge",  alpha=0.85, zorder=3,
+           bottom=shortfall)
+    ax.bar(x, solar_meter, color=C_SOLAR,   label="Solar direct",    alpha=0.85, zorder=3,
+           bottom=shortfall + disc_meter)
+    ax.axhline(load_d[0], color="#333333", lw=1.5, ls=":",
+               label=f"Load ({load_d[0]:.1f} MWh/h)", zorder=4)
+    ax.set_ylabel("MWh / hour", fontsize=10)
+    ax.set_title("Panel 1 — How Load Is Met (meter basis, post-loss)", fontsize=10, loc="left")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    ax.set_ylim(0, load_d[0] * 1.35)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Panel 2 — charge / discharge
+    ax = axes[1]
+    shade_periods(ax)
+    ax.bar(x,     chg,  color=C_CHG,  label="Charge (into battery)",   alpha=0.85, zorder=3)
+    ax.bar(x,    -disc, color=C_DISC, label="Discharge (from battery)", alpha=0.85, zorder=3)
+    ax.axhline(0, color="#333333", lw=0.8)
+    ax.set_ylabel("MWh / hour", fontsize=10)
+    ax.set_title("Panel 2 — BESS Charge / Discharge (busbar)", fontsize=10, loc="left")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    _ylim = max(disc.max(), chg.max()) * 1.4
+    ax.set_ylim(-_ylim, _ylim)
+    ax.grid(axis="y", alpha=0.3)
+    ax.annotate(
+        "Zero discharge\n(rsrv_fwd_evening\nblocking offpeak)",
+        xy=(12.5, -5), xytext=(12.5, -chg.max() * 0.6),
+        ha="center", va="top", fontsize=7.5, color="#B8860B",
+        arrowprops=dict(arrowstyle="->", color="#B8860B", lw=1),
+    )
+
+    # Panel 3 — SOC + reservations
+    ax = axes[2]
+    shade_periods(ax)
+    ax.step(x_soc, soc_arr, where="post", color=C_SOC, lw=2.2, label="SOC", zorder=4)
+    ax.fill_between(x_soc, soc_arr, step="post", color=C_SOC, alpha=0.15)
+    ax.fill_between(x - 0.5, rsrv_eve_arr,  step="post",
+                    color=C_RSRV_E,   alpha=0.30, label="rsrv_evening")
+    ax.fill_between(x - 0.5, rsrv_morn_arr, step="post",
+                    color=C_RSRV_M,   alpha=0.30, label="rsrv_morning_next")
+    ax.fill_between(x - 0.5, rsrv_fwd_arr,  step="post",
+                    color=C_RSRV_FWD, alpha=0.30, label="rsrv_fwd_evening")
+    ax.axhline(energy_cap, color="#999999", ls="--", lw=1,
+               label=f"Capacity ({energy_cap:.0f} MWh)")
+    ax.set_ylabel("MWh", fontsize=10)
+    ax.set_title("Panel 3 — SOC Trajectory and Reservations", fontsize=10, loc="left")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    ax.set_ylim(0, energy_cap * 1.15)
+    ax.grid(axis="y", alpha=0.3)
+    for tx, lbl in [(10.5, "Trigger 1\nhod=11"), (14.5, "Trigger 2\nhod=15")]:
+        ax.annotate(
+            lbl, xy=(tx, energy_cap * 0.55), fontsize=7.5, ha="center", color="#555555",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#aaaaaa", alpha=0.8),
+        )
+
+    # Panel 4 — tariff
+    ax = axes[3]
+    shade_periods(ax)
+    bars = ax.bar(x, rates,
+                  color=[PERIOD_COLORS[p] for p in periods],
+                  alpha=0.8, zorder=3, edgecolor="white", lw=0.5)
+    ax.set_ylabel("₹ / kWh", fontsize=10)
+    ax.set_title("Panel 4 — DISCOM Tariff Rate (LT)", fontsize=10, loc="left")
+    ax.set_ylim(7.5, 9.8)
+    ax.set_xticks(range(24))
+    ax.set_xticklabels([f"{h:02d}:00" for h in range(24)],
+                       rotation=45, ha="right", fontsize=8)
+    ax.set_xlabel("Hour of Day", fontsize=10)
+    ax.grid(axis="y", alpha=0.3)
+    for bar, rate in zip(bars, rates):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+                f"{rate:.3f}", ha="center", va="bottom", fontsize=6.5, rotation=90)
+
+    legend_patches = [
+        mpatches.Patch(color=PERIOD_COLORS["morning_peak"],  alpha=0.5, label="Morning Peak  ₹9.182"),
+        mpatches.Patch(color=PERIOD_COLORS["solar_offpeak"], alpha=0.5, label="Solar Offpeak  ₹8.027"),
+        mpatches.Patch(color=PERIOD_COLORS["evening_peak"],  alpha=0.5, label="Evening Peak  ₹9.182"),
+        mpatches.Patch(color=PERIOD_COLORS["normal"],        alpha=0.5, label="Normal  ₹8.687"),
+    ]
+    fig.legend(handles=legend_patches, loc="lower center", ncol=4, fontsize=8.5,
+               bbox_to_anchor=(0.5, 0.01), framealpha=0.9,
+               title="ToD Period", title_fontsize=8.5)
+
+    plt.tight_layout(rect=[0, 0.06, 1, 0.98])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"  Day-250 dispatch plot saved → {output_path}")
+    plt.close()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -420,5 +698,8 @@ if __name__ == "__main__":
     print(f"\n  {'Trials completed':<38} : {result.n_trials_completed}")
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
 
-    output_path = find_project_root() / "outputs" / "model_output.png"
-    plot_dashboard(params, y1, fi, data, output_path)
+    outputs_dir = find_project_root() / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
+    plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")

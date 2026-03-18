@@ -20,21 +20,18 @@ solver:
       type: continuous
       min: 0
       max: 1000
-      step: 0.5
 
     wind_capacity_mw:
       scope: current
       type: continuous
       min: 0
       max: 0
-      step: 0.5
 
     ppa_capacity_mw:
       scope: current
       type: continuous
       min: 0
       max: 1000
-      step: 0.5
 
     bess_containers:
       scope: current
@@ -43,23 +40,19 @@ solver:
       max: 1000
       step: 1
 
-    # ── FUTURE SCOPE ──────────────────────────────────────────────────
-
     bess_charge_c_rate:
-      scope: future
+      scope: current
       type: continuous
       min: 0
-      max: 0.5
-      step: 0.01
-      fixed_value: 1.0         # value used while out of scope
+      max: 1.0
 
     bess_discharge_c_rate:
-      scope: future
+      scope: current
       type: continuous
       min: 0
-      max: 0.5
-      step: 0.01
-      fixed_value: 1.0         # value used while out of scope
+      max: 1.0
+
+    # ── FUTURE SCOPE ──────────────────────────────────────────────────
 
     dispatch_priority:
       scope: future
@@ -92,7 +85,6 @@ solver:
       type: continuous
       min: 80
       max: 100
-      step: 0.5
       fixed_value: 80.0         # value used while out of scope
 
   # ─────────────────────────────────────────────────────────────────────
