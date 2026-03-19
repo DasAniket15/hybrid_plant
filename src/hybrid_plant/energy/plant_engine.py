@@ -93,6 +93,20 @@ class PlantEngine:
         # Convenience union (for debug / external reference)
         self.peak_hours: set[int] = self.morning_peak_hods | self.evening_peak_hods
 
+        # ── Dispatch mask (optional client override) ──────────────────────────
+        # Loaded once here; applied at two points in simulate():
+        #   1. Pre-compute pass  — blocked hours zeroed in re_shortfall so the
+        #      ToD reservation planner never ring-fences SOC for them (full block).
+        #   2. Discharge step    — discharge_raw forced to 0 for blocked hours.
+        # Charging is never affected.
+        _mask_cfg = config.bess["bess"].get("dispatch_mask", {})
+        _blocked: set[int] = (
+            {int(h) for h in _mask_cfg.get("blocked_hours", [])}
+            if _mask_cfg.get("enabled", False)
+            else set()
+        )
+        self.discharge_allowed_hods: set[int] = set(range(24)) - _blocked
+
     # ─────────────────────────────────────────────────────────────────────────
 
     def simulate(
@@ -162,6 +176,11 @@ class PlantEngine:
 
             _direct = min(_sd + _wd, ppa_capacity_mw)
             re_shortfall[_h] = max(load[_h] - _direct * loss_factor, 0.0)
+
+            # Full block: reservation planner treats blocked hours as zero-shortfall
+            # so no SOC is ring-fenced for hours that will never discharge.
+            if (_h % 24) not in self.discharge_allowed_hods:
+                re_shortfall[_h] = 0.0
 
             if bess_charge_source == "solar_only":
                 re_surplus[_h] = max(_s - _sd, 0.0)
@@ -376,7 +395,7 @@ class PlantEngine:
                 available_soc,
                 discharge_power_cap,
                 remaining_headroom / self.discharge_eff,  # headroom is on busbar export (direct_pre + discharge_raw×eff ≤ ppa_cap)
-            )
+            ) if hod in self.discharge_allowed_hods else 0.0
             soc -= discharge_raw
 
             # Consume reservations as they are used
