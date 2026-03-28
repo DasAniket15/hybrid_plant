@@ -56,6 +56,7 @@ class FinanceEngine:
         wind_capacity_mw:            float,
         ppa_capacity_mw:             float,
         banked_energy_kwh_projection: list[float] | None = None,
+        fast_mode:                   bool = False,
     ) -> dict[str, Any]:
         """
         Run the full finance pipeline for a given plant configuration.
@@ -67,6 +68,9 @@ class FinanceEngine:
         wind_capacity_mw             : Wind capacity (MW)
         ppa_capacity_mw              : Contracted PPA capacity (MW)
         banked_energy_kwh_projection : annual banked energy (kWh), defaults to zeros
+        fast_mode                    : if True, use scalar energy projection (solver
+                                       trial ranking); if False, use full per-year
+                                       re-simulation (final reporting). Default False.
 
         Returns
         -------
@@ -89,7 +93,7 @@ class FinanceEngine:
             config        = self._config,
             data          = self._data,
             year1_results = year1_results,
-        ).project()
+        ).project(fast_mode=fast_mode)
 
         busbar_mwh = projection["delivered_pre_mwh"]
         meter_mwh  = projection["delivered_meter_mwh"]

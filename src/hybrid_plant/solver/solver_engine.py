@@ -103,6 +103,7 @@ class SolverEngine:
         self._n_trials    = int(sv.get("n_trials", 300))
         self._n_jobs      = int(sv.get("n_jobs", 1))
         self._random_seed = int(sv.get("random_seed", 42))
+        self._fast_mode   = bool(sv.get("fast_mode", True))
 
         self._trial_log: list[dict[str, Any]] = []
 
@@ -181,7 +182,7 @@ class SolverEngine:
 
     # ── Single evaluation ─────────────────────────────────────────────────────
 
-    def _evaluate(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _evaluate(self, params: dict[str, Any], fast_mode: bool = False) -> dict[str, Any]:
         """Run energy + finance engines for a given parameter set."""
         year1 = self._energy_engine.evaluate(
             solar_capacity_mw  = params["solar_capacity_mw"],
@@ -198,6 +199,7 @@ class SolverEngine:
             solar_capacity_mw = params["solar_capacity_mw"],
             wind_capacity_mw  = params["wind_capacity_mw"],
             ppa_capacity_mw   = params["ppa_capacity_mw"],
+            fast_mode         = fast_mode,
         )
         return {"year1": year1, "finance": finance}
 
@@ -219,7 +221,7 @@ class SolverEngine:
         params  = self._suggest(trial)
 
         try:
-            result  = self._evaluate(params)
+            result  = self._evaluate(params, fast_mode=self._fast_mode)
             finance = result["finance"]
             year1   = result["year1"]
             feasible    = self._is_feasible(finance)

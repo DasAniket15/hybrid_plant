@@ -100,6 +100,12 @@ class EnergyProjection:
             column="soh",
         )
 
+        # Year-1 scalar totals — used by the fast (scalar-scaling) path.
+        self._solar_1     = float(np.sum(year1_results["solar_direct_pre"]))
+        self._wind_1      = float(np.sum(year1_results["wind_direct_pre"]))
+        self._battery_1   = float(np.sum(year1_results["discharge_pre"]))
+        self._loss_factor = self._sim_params["loss_factor"]
+
         # One PlantEngine instance, reused across all 25 year simulations.
         self._plant = PlantEngine(config, data)
 
@@ -121,16 +127,17 @@ class EnergyProjection:
 
     # ─────────────────────────────────────────────────────────────────────────
 
-    def project(self) -> dict[str, np.ndarray]:
+    def project(self, fast_mode: bool = False) -> dict[str, np.ndarray]:
         """
-        Re-simulate each of the 25 project years with that year's degraded
-        plant capacities and return annual energy totals.
+        Return annual energy totals across the 25-year project lifetime.
 
-        For each year t, the simulation receives:
-          • solar_capacity_mw × solar_eff[t]   (degraded AC solar capacity)
-          • wind_capacity_mw  × wind_eff[t]    (degraded wind capacity)
-          • bess_soh_factor = soh[t]           (scales BESS energy & power caps)
-          • all other params unchanged (C-rates, PPA cap, dispatch rules, …)
+        Parameters
+        ----------
+        fast_mode : bool, default False
+            When True, applies degradation factors directly to Year-1 scalar
+            totals (fast, suitable for solver trial ranking).
+            When False, re-runs the full 8760-hour dispatch for each year
+            (accurate, used for final reporting and dashboard).
 
         Returns
         -------
@@ -141,7 +148,56 @@ class EnergyProjection:
             delivered_pre_mwh   : np.ndarray  busbar total  (LCOE denominator)
             delivered_meter_mwh : np.ndarray  at client meter (savings & landed tariff)
         """
-        sp = self._sim_params   # base (Year-1) simulation parameters
+        if fast_mode:
+            return self._project_fast()
+        return self._project_full()
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _project_fast(self) -> dict[str, np.ndarray]:
+        """
+        Fast path: scale Year-1 scalar totals by annual degradation factors.
+        Runs in microseconds. Used during solver trials for ranking only.
+        """
+        solar_arr   = np.zeros(self._project_life)
+        wind_arr    = np.zeros(self._project_life)
+        battery_arr = np.zeros(self._project_life)
+        pre_arr     = np.zeros(self._project_life)
+        meter_arr   = np.zeros(self._project_life)
+
+        for i, year in enumerate(range(1, self._project_life + 1)):
+            s = self._solar_1   * self._solar_eff.get(year, 1.0)
+            w = self._wind_1    * self._wind_eff.get(year, 1.0)
+            b = self._battery_1 * self._soh.get(year, 1.0)
+
+            solar_arr[i]   = s
+            wind_arr[i]    = w
+            battery_arr[i] = b
+            pre_arr[i]     = s + w + b
+            meter_arr[i]   = (s + w + b) * self._loss_factor
+
+        return {
+            "solar_direct_mwh":     solar_arr,
+            "wind_direct_mwh":      wind_arr,
+            "battery_mwh":          battery_arr,
+            "delivered_pre_mwh":    pre_arr,
+            "delivered_meter_mwh":  meter_arr,
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _project_full(self) -> dict[str, np.ndarray]:
+        """
+        Full path: re-simulate each of the 25 project years with that year's
+        degraded plant capacities. Used for final reporting and dashboard.
+
+        For each year t, the simulation receives:
+          • solar_capacity_mw × solar_eff[t]   (degraded AC solar capacity)
+          • wind_capacity_mw  × wind_eff[t]    (degraded wind capacity)
+          • bess_soh_factor = soh[t]           (scales BESS energy & power caps)
+          • all other params unchanged (C-rates, PPA cap, dispatch rules, …)
+        """
+        sp = self._sim_params
 
         solar_arr   = np.zeros(self._project_life)
         wind_arr    = np.zeros(self._project_life)

@@ -2,6 +2,11 @@ solver:
 
   debug_mode: false
 
+  # fast_mode: true  → solver trials use scalar energy projection (fast, ~2-3 min)
+  # fast_mode: false → solver trials use full per-year re-simulation (accurate, ~20-40 min)
+  # The final best-solution evaluation always uses full re-simulation regardless.
+  fast_mode: true
+
   objective: "maximize_client_savings"
 
   baseline:
