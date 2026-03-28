@@ -86,12 +86,9 @@ class FinanceEngine:
 
         # ── 3. Energy projection ──────────────────────────────────────────────
         projection = EnergyProjection(
-            config            = self._config,
-            data              = self._data,
-            year1_results     = year1_results,
-            solar_capacity_mw = solar_capacity_mw,
-            wind_capacity_mw  = wind_capacity_mw,
-            loss_factor       = loss_factor,
+            config        = self._config,
+            data          = self._data,
+            year1_results = year1_results,
         ).project()
 
         busbar_mwh = projection["delivered_pre_mwh"]

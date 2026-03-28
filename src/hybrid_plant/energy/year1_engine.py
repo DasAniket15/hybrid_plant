@@ -52,4 +52,8 @@ class Year1Engine:
         grid_results  = self.grid.apply_losses(plant_results["plant_export_pre"])
         meter_results = self.meter.compute_shortfall(grid_results["meter_delivery"])
 
-        return {**plant_results, **grid_results, **meter_results}
+        # Store all simulation parameters so EnergyProjection can re-run
+        # the full dispatch for each year without threading them separately.
+        sim_params = {**kwargs, "loss_factor": self.grid.loss_factor}
+
+        return {**plant_results, **grid_results, **meter_results, "sim_params": sim_params}

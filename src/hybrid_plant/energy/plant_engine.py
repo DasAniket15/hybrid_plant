@@ -120,6 +120,7 @@ class PlantEngine:
         dispatch_priority:  str,
         bess_charge_source: str,
         loss_factor:        float,
+        bess_soh_factor:    float = 1.0,
     ) -> dict[str, Any]:
         """
         Run the full 8760-hour dispatch simulation.
@@ -128,13 +129,16 @@ class PlantEngine:
         ----------
         solar_capacity_mw  : AC solar installed capacity (MW)
         wind_capacity_mw   : Wind installed capacity (MW)
-        bess_containers    : Number of BESS containers
+        bess_containers    : Number of BESS containers (physical, unchanged by degradation)
         charge_c_rate      : BESS charge C-rate (fraction of energy capacity per hour)
         discharge_c_rate   : BESS discharge C-rate
         ppa_capacity_mw    : Contracted PPA export cap (MW)
         dispatch_priority  : "solar_first" | "wind_first" | "proportional"
         bess_charge_source : "solar_only" | "wind_only" | "solar_and_wind"
         loss_factor        : Grid loss factor from GridInterface
+        bess_soh_factor    : State-of-health multiplier [0–1], default 1.0 (Year 1).
+                             Scales effective energy capacity and therefore power caps.
+                             Used by EnergyProjection for year-wise re-simulation.
 
         Returns
         -------
@@ -147,7 +151,9 @@ class PlantEngine:
 
         hours = len(load)
 
-        energy_capacity     = bess_containers * self.container_size
+        # Effective energy capacity shrinks with SOH; power caps scale proportionally
+        # since they are expressed as C-rate × energy capacity.
+        energy_capacity     = bess_containers * self.container_size * bess_soh_factor
         charge_power_cap    = charge_c_rate    * energy_capacity
         discharge_power_cap = discharge_c_rate * energy_capacity
 
@@ -357,8 +363,13 @@ class PlantEngine:
 
             # ── 4. Aux consumption (only when BESS has charge) ───────────────
             if soc > 0:
-                active_containers = min(bess_containers,
-                                        math.ceil(soc / self.container_size))
+                # Each container's effective capacity degrades with SOH, so
+                # ceil(soc / effective_size) may be higher than at nameplate.
+                effective_container_size = self.container_size * bess_soh_factor
+                active_containers = min(
+                    bess_containers,
+                    math.ceil(soc / effective_container_size) if effective_container_size > 0 else bess_containers,
+                )
                 aux_energy  = active_containers * self.aux_per_hour
                 aux_loss[h] = aux_energy
                 soc         = max(soc - aux_energy, 0.0)

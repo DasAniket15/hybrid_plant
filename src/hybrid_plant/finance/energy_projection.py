@@ -1,13 +1,38 @@
 """
 energy_projection.py
 ────────────────────
-Projects annual energy delivery across the full project lifetime by applying
-technology-specific degradation curves to Year-1 hourly simulation results.
+Projects annual energy delivery across the full project lifetime by
+re-running the complete 8760-hour plant dispatch for each calendar year
+with that year's degraded capacities.
 
-Outputs
+Why re-simulate per year (vs. scaling Year-1 totals)
+─────────────────────────────────────────────────────
+The simple approach of multiplying Year-1 scalar totals by degradation
+factors is inaccurate because the three energy streams interact non-linearly:
+
+  • Degraded solar capacity  → less surplus available to charge the BESS
+    → different charge/discharge pattern → different shortfall coverage
+  • Degraded BESS SOH        → lower energy capacity AND lower power caps
+    (C-rate × degraded capacity) → the ToD reservation planner behaves
+    differently with less headroom
+
+Capturing these effects requires a full simulation, not scalar scaling.
+
+Degradation model per year t
+────────────────────────────
+  Solar AC capacity   = base_solar_mw  × solar_eff[t]   (efficiency curve)
+  Wind capacity       = base_wind_mw   × wind_eff[t]    (efficiency curve)
+  BESS energy cap     = containers × container_size × soh[t]
+                        (passed to PlantEngine as bess_soh_factor)
+  Power caps, BESS    = C-rate × degraded energy cap    (inside PlantEngine)
+
+Outputs (same keys as before — backward compatible)
 ───────
-  delivered_pre_mwh   busbar energy (pre-loss)  → LCOE denominator
-  delivered_meter_mwh meter energy  (post-loss) → savings & landed tariff
+  solar_direct_mwh    annual solar direct delivery (busbar, pre-loss)
+  wind_direct_mwh     annual wind direct delivery  (busbar, pre-loss)
+  battery_mwh         annual BESS discharge        (busbar, pre-loss)
+  delivered_pre_mwh   busbar total  → LCOE denominator
+  delivered_meter_mwh meter total   → savings & landed tariff
 """
 
 from __future__ import annotations
@@ -20,34 +45,44 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.energy.plant_engine import PlantEngine
 
 
 class EnergyProjection:
     """
-    Scales Year-1 dispatch actuals by annual degradation factors to produce
-    a 25-year energy projection.
+    Runs a per-year full plant simulation to produce an accurate 25-year
+    energy delivery projection.
 
     Parameters
     ----------
-    config            : FullConfig
-    data              : dict  — time-series data dict (used for type consistency)
-    year1_results     : dict  — output of Year1Engine.evaluate()
-    solar_capacity_mw : float — AC MW (informational only, not recalculated)
-    wind_capacity_mw  : float — MW
-    loss_factor       : float — from GridInterface, passed through directly
+    config        : FullConfig
+    data          : dict — time-series data (solar_cuf, wind_cuf, load_profile, …)
+    year1_results : dict — output of Year1Engine.evaluate(); must contain
+                    ``sim_params`` (stored automatically by Year1Engine).
+
+    The ``solar_capacity_mw``, ``wind_capacity_mw``, and ``loss_factor``
+    keyword arguments are accepted for call-site backward compatibility
+    but are not used — all required values come through sim_params.
     """
 
     def __init__(
         self,
-        config:            FullConfig,
-        data:              dict[str, Any],
-        year1_results:     dict[str, Any],
-        solar_capacity_mw: float,
-        wind_capacity_mw:  float,
-        loss_factor:       float,
+        config:        FullConfig,
+        data:          dict[str, Any],
+        year1_results: dict[str, Any],
+        # Kept for backward-compatible call sites; values come from sim_params.
+        solar_capacity_mw: float | None = None,
+        wind_capacity_mw:  float | None = None,
+        loss_factor:       float | None = None,
     ) -> None:
-        self._year1       = year1_results
-        self._loss_factor = loss_factor
+        if "sim_params" not in year1_results:
+            raise KeyError(
+                "'sim_params' not found in year1_results. "
+                "Ensure Year1Engine.evaluate() produced this result — "
+                "direct PlantEngine.simulate() outputs are not sufficient."
+            )
+
+        self._sim_params   = year1_results["sim_params"]
         self._project_life = config.project["project"]["project_life_years"]
 
         root = find_project_root()
@@ -65,22 +100,14 @@ class EnergyProjection:
             column="soh",
         )
 
+        # One PlantEngine instance, reused across all 25 year simulations.
+        self._plant = PlantEngine(config, data)
+
     # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _load_curve(path: Path, column: str) -> dict[int, float]:
-        """
-        Load a degradation CSV into a {year: value} dict.
-
-        Parameters
-        ----------
-        path   : absolute path to CSV
-        column : target column name (case-insensitive)
-
-        Returns
-        -------
-        dict[int, float]
-        """
+        """Load a degradation CSV into a {year: value} dict."""
         df = pd.read_csv(path)
         df.columns = df.columns.str.strip().str.lower()
 
@@ -96,20 +123,25 @@ class EnergyProjection:
 
     def project(self) -> dict[str, np.ndarray]:
         """
-        Apply year-by-year degradation factors and return energy arrays.
+        Re-simulate each of the 25 project years with that year's degraded
+        plant capacities and return annual energy totals.
+
+        For each year t, the simulation receives:
+          • solar_capacity_mw × solar_eff[t]   (degraded AC solar capacity)
+          • wind_capacity_mw  × wind_eff[t]    (degraded wind capacity)
+          • bess_soh_factor = soh[t]           (scales BESS energy & power caps)
+          • all other params unchanged (C-rates, PPA cap, dispatch rules, …)
 
         Returns
         -------
         dict
-            solar_direct_mwh    : np.ndarray  shape (project_life,)
-            wind_direct_mwh     : np.ndarray  shape (project_life,)
-            battery_mwh         : np.ndarray  shape (project_life,)
-            delivered_pre_mwh   : np.ndarray  busbar (pre-loss)
-            delivered_meter_mwh : np.ndarray  at client meter (post-loss)
+            solar_direct_mwh    : np.ndarray  shape (project_life,)  busbar, pre-loss
+            wind_direct_mwh     : np.ndarray  shape (project_life,)  busbar, pre-loss
+            battery_mwh         : np.ndarray  shape (project_life,)  busbar, pre-loss
+            delivered_pre_mwh   : np.ndarray  busbar total  (LCOE denominator)
+            delivered_meter_mwh : np.ndarray  at client meter (savings & landed tariff)
         """
-        solar_1   = float(np.sum(self._year1["solar_direct_pre"]))
-        wind_1    = float(np.sum(self._year1["wind_direct_pre"]))
-        battery_1 = float(np.sum(self._year1["discharge_pre"]))
+        sp = self._sim_params   # base (Year-1) simulation parameters
 
         solar_arr   = np.zeros(self._project_life)
         wind_arr    = np.zeros(self._project_life)
@@ -122,15 +154,28 @@ class EnergyProjection:
             wind_eff  = self._wind_eff.get(year, 1.0)
             soh       = self._soh.get(year, 1.0)
 
-            s = solar_1   * solar_eff
-            w = wind_1    * wind_eff
-            b = battery_1 * soh
+            yr = self._plant.simulate(
+                solar_capacity_mw  = sp["solar_capacity_mw"] * solar_eff,
+                wind_capacity_mw   = sp["wind_capacity_mw"]  * wind_eff,
+                bess_containers    = sp["bess_containers"],
+                bess_soh_factor    = soh,
+                charge_c_rate      = sp["charge_c_rate"],
+                discharge_c_rate   = sp["discharge_c_rate"],
+                ppa_capacity_mw    = sp["ppa_capacity_mw"],
+                dispatch_priority  = sp["dispatch_priority"],
+                bess_charge_source = sp["bess_charge_source"],
+                loss_factor        = sp["loss_factor"],
+            )
+
+            s = float(np.sum(yr["solar_direct_pre"]))
+            w = float(np.sum(yr["wind_direct_pre"]))
+            b = float(np.sum(yr["discharge_pre"]))
 
             solar_arr[i]   = s
             wind_arr[i]    = w
             battery_arr[i] = b
             pre_arr[i]     = s + w + b
-            meter_arr[i]   = (s + w + b) * self._loss_factor
+            meter_arr[i]   = (s + w + b) * sp["loss_factor"]
 
         return {
             "solar_direct_mwh":     solar_arr,
