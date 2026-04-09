@@ -18,7 +18,7 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import HOURS_PER_YEAR, MWH_TO_KWH
+from hybrid_plant.constants import HOURS_PER_YEAR, KWH_TO_MWH
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
     # ── Load profile ─────────────────────────────────────────────────────────
     load_profile = _load_csv_column(_resolve(load_cfg["source_file"]))
     if load_cfg["unit"].lower() == "kwh":
-        load_profile = load_profile / MWH_TO_KWH   # kWh → MWh
+        load_profile = load_profile * KWH_TO_MWH   # kWh → MWh
     _validate_8760(load_profile, "Load profile")
 
     # ── Degradation curves ───────────────────────────────────────────────────
