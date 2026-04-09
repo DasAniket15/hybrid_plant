@@ -21,8 +21,8 @@ dev = [
     "plotly",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/hybrid_plant"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

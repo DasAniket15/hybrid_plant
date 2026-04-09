@@ -24,7 +24,7 @@ bess:
     salvage_rate_per_mwh: 0
 
   dispatch_mask:
-    enabled: false
+    enabled: true
     # Hours listed here are BLOCKED for BESS discharge.
     # Uses 0-indexed hours: 0 = midnight–1 am, 23 = 11 pm–midnight.
     # Charging is never affected — only discharge is blocked.
