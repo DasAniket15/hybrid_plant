@@ -6,11 +6,20 @@ Top-level finance pipeline orchestrator.
 Pipeline
 ────────
   1. CAPEX          → total project capital cost
-  2. OPEX           → 25-year annual OPEX projection
-  3. Energy         → 25-year busbar + meter energy (degraded)
+  2. Energy         → 25-year busbar + meter energy (degraded, with CUF-based
+                       augmentation built dynamically inside EnergyProjection)
+  3. OPEX           → 25-year annual OPEX projection (uses augmentation schedule
+                       extracted from the Energy projection result)
   4. LCOE           → NPV(costs) / NPV(busbar energy)
   5. Landed tariff  → absolute annual costs → divide by meter kWh
   6. Client savings → hybrid vs. 100 % DISCOM baseline
+
+Note on pipeline order
+──────────────────────
+Energy projection runs before OPEX because the augmentation schedule
+(purchase costs, growing installed MWh) is now built dynamically inside
+``EnergyProjection._project_full`` (CUF-based trigger requires simulation).
+OPEX then consumes the resulting ``augmentation_result`` dict.
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.finance.augmentation_engine import AugmentationEngine
 from hybrid_plant.finance.capex_model import CapexModel
 from hybrid_plant.finance.energy_projection import EnergyProjection
 from hybrid_plant.finance.landed_tariff_model import LandedTariffModel
@@ -77,26 +87,38 @@ class FinanceEngine:
         dict — full finance results including primary outputs and all breakdowns
         """
         bess_mwh    = float(year1_results["energy_capacity_mwh"])
-        loss_factor = float(year1_results["loss_factor"])
+        loss_factor = float(year1_results["loss_factor"])  # noqa: F841  (retained for API clarity)
 
         # ── 1. CAPEX ──────────────────────────────────────────────────────────
-        capex     = self._capex.compute(solar_capacity_mw, wind_capacity_mw, bess_mwh)
+        capex       = self._capex.compute(solar_capacity_mw, wind_capacity_mw, bess_mwh)
         total_capex = capex["total_capex"]
 
-        # ── 2. OPEX ───────────────────────────────────────────────────────────
-        opex_projection, opex_breakdown = self._opex.compute(
-            solar_capacity_mw, wind_capacity_mw, bess_mwh, total_capex
-        )
+        # ── 2. Energy projection ──────────────────────────────────────────────
+        # AugmentationEngine is created fresh each call so it reads the current
+        # config.  In full mode, EnergyProjection builds the augmentation
+        # schedule dynamically via CUF-based trigger; in fast mode it uses
+        # passthrough (no augmentation events) for solver trial speed.
+        aug_engine = AugmentationEngine(self._config)
 
-        # ── 3. Energy projection ──────────────────────────────────────────────
         projection = EnergyProjection(
-            config        = self._config,
-            data          = self._data,
-            year1_results = year1_results,
+            config       = self._config,
+            data         = self._data,
+            year1_results= year1_results,
+            aug_engine   = aug_engine,
         ).project(fast_mode=fast_mode)
 
         busbar_mwh = projection["delivered_pre_mwh"]
         meter_mwh  = projection["delivered_meter_mwh"]
+        aug_result = projection.get("augmentation_result")
+
+        # ── 3. OPEX ───────────────────────────────────────────────────────────
+        opex_projection, opex_breakdown = self._opex.compute(
+            solar_capacity_mw   = solar_capacity_mw,
+            wind_capacity_mw    = wind_capacity_mw,
+            bess_energy_mwh     = bess_mwh,
+            total_capex         = total_capex,
+            augmentation_result = aug_result,
+        )
 
         # ── 4. LCOE ───────────────────────────────────────────────────────────
         lcoe_result = self._lcoe.compute(total_capex, opex_projection, busbar_mwh)
@@ -134,4 +156,5 @@ class FinanceEngine:
             "lcoe_breakdown":          lcoe_result,
             "landed_tariff_breakdown": landed_result,
             "savings_breakdown":       savings_result,
+            "augmentation":            aug_result,
         }

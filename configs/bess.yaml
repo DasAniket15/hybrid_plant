@@ -14,10 +14,12 @@ bess:
 
   augmentation:
     enabled: true
-    restore_to_percent_of_year1: 100
+    trigger_cuf_percent: 95.0            # % of Year-1 plant CUF → triggers augmentation when CUF drops below this
+    restore_to_percent_of_year1: 100.0   # % of Year-1 BESS effective capacity → target after augmentation
+    max_gap_years: null                  # force augmentation at most every N years (null = threshold-only; 1 = annual)
     minimum_augmentation_containers: 1
-    cost_per_mwh: 0.60e7
-    opex_percent_of_capex: 2.0
+    cost_per_mwh: 0.60e7                 # Rs/MWh — treated as OPEX in augmentation year (match finance.yaml capex.bess)
+    oversize_percent: 5.0                # % extra containers added on top of solver-optimal in Year-1 (creates CUF buffer)
 
   salvage:
     enabled: true

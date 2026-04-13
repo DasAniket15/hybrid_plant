@@ -21,7 +21,9 @@ from hybrid_plant.solver.solver_engine import SolverEngine, SolverResult
 @pytest.fixture(scope="module")
 def solver_result(config, data, energy_engine, finance_engine):
     solver = SolverEngine(config, data, energy_engine, finance_engine)
-    return solver.run(n_trials=50, show_progress=False)
+    # 100 trials required: CUF-based augmentation changed the fast-mode objective
+    # landscape so the TPE needs slightly more samples to find the feasible region.
+    return solver.run(n_trials=100, show_progress=False)
 
 
 @pytest.mark.slow
