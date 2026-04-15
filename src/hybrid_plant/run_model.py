@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from hybrid_plant._paths import find_project_root
+from hybrid_plant.augmentation import AugmentationEngine, AugmentationMode
 from hybrid_plant.config_loader import load_config
 from hybrid_plant.constants import CRORE_TO_RS
 from hybrid_plant.data_loader import load_timeseries_data
@@ -305,6 +306,108 @@ def print_section7(fi):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Section 8 — BESS Augmentation Analysis
+# ─────────────────────────────────────────────────────────────────────────────
+
+def print_section8_augmentation(aug_result: dict, base_fi: dict) -> None:
+    """
+    Summarise the augmentation analysis:
+
+      • Mode & threshold CUF (the invariant target)
+      • Initial BESS sizing (base vs optimised oversize)
+      • Augmentation event schedule with feasibility flag
+      • Total augmentation OPEX and savings delta vs base (no-aug)
+      • Scenarios swept (Optimized mode only)
+    """
+    sep("SECTION 8 — BESS AUGMENTATION")
+
+    mode          = aug_result.get("mode", "disabled")
+    enabled       = bool(aug_result.get("enabled", False))
+    threshold_cuf = aug_result.get("threshold_cuf")
+    events        = aug_result.get("augmentation_events", []) or []
+    total_aug_mwh = float(aug_result.get("total_augmentation_mwh", 0.0))
+    aug_fi        = aug_result.get("finance_result", {}) or {}
+    scenarios     = aug_result.get("scenarios", []) or []
+    best_initial  = int(aug_result.get("best_initial_containers", 0))
+    best_mwh      = float(aug_result.get("best_initial_capacity_mwh", 0.0))
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    print(f"\n  {'── CONFIGURATION'}")
+    print(f"  {'Mode':<38} : {mode}")
+    print(f"  {'Enabled':<38} : {enabled}")
+    if threshold_cuf is not None:
+        print(f"  {'Threshold Plant CUF (Year-1, %)':<38} : {round(threshold_cuf, 4)}")
+    else:
+        print(f"  {'Threshold Plant CUF':<38} : n/a  (augmentation disabled)")
+    print(f"  {'Best initial BESS containers':<38} : {best_initial}")
+    print(f"  {'Best initial BESS capacity (MWh)':<38} : {round(best_mwh, 2)}")
+
+    # ── Augmentation events ───────────────────────────────────────────────────
+    print(f"\n  {'── EVENTS'}")
+    if not events:
+        print(f"  {'No augmentation events triggered.':<38}")
+    else:
+        aug_opex_total_rs = sum(float(e.get("opex_rs", 0.0)) for e in events)
+        feas_n = sum(1 for e in events if e.get("feasible", True))
+        besteff_n = len(events) - feas_n
+        print(f"  {'Events logged':<38} : {len(events)}  "
+              f"({feas_n} feasible, {besteff_n} best-effort)")
+        print(f"  {'Total augmentation (MWh)':<38} : {round(total_aug_mwh, 2)}")
+        print(f"  {'Total augmentation OPEX (Rs Cr)':<38} : {cr(aug_opex_total_rs)}")
+
+        print()
+        hdr = (
+            f"  {'Yr':>3}  {'Containers':>10}  {'MWh':>8}  "
+            f"{'OPEX (Cr)':>10}  {'Pre-aug CUF %':>13}  {'Feasible':>9}"
+        )
+        print(hdr); sep()
+        for ev in events:
+            pre = ev.get("pre_aug_cuf")
+            pre_s = f"{pre:.3f}" if pre is not None else "   n/a"
+            flag  = "yes" if ev.get("feasible", True) else "best-eff"
+            print(
+                f"  {int(ev['year']):>3}  "
+                f"{int(ev['containers']):>10}  "
+                f"{float(ev['mwh']):>8.2f}  "
+                f"{cr(float(ev['opex_rs'])):>10.4f}  "
+                f"{pre_s:>13}  "
+                f"{flag:>9}"
+            )
+        sep()
+
+    # ── Savings delta: augmented finance vs base (no-aug) finance ────────────
+    base_npv = float(base_fi.get("savings_npv", 0.0))
+    aug_npv  = float(aug_fi.get("savings_npv", 0.0))
+    delta    = aug_npv - base_npv
+    print(f"\n  {'── ECONOMICS (Savings NPV vs base)'}")
+    print(f"  {'Base (no augmentation) NPV (Rs Cr)':<38} : {cr(base_npv)}")
+    print(f"  {'Augmented NPV (Rs Cr)':<38} : {cr(aug_npv)}")
+    print(f"  {'Delta (Rs Cr)':<38} : {round(cr(delta), 4):+}")
+    if base_npv:
+        print(f"  {'Delta %':<38} : {round(delta / base_npv * 100, 2):+} %")
+
+    # ── Scenarios table (optimized mode only) ─────────────────────────────────
+    if mode == "optimized" and len(scenarios) > 1:
+        print(f"\n  {'── OVERSIZING SCAN (Optimized mode)'}")
+        print(
+            f"  {'Δn':>3}  {'Initial':>8}  {'Events':>7}  "
+            f"{'Aug MWh':>10}  {'Savings NPV (Cr)':>17}  {'Pick':>5}"
+        )
+        sep()
+        for sc in scenarios:
+            mark = "★" if int(sc["initial_containers"]) == best_initial else ""
+            print(
+                f"  {int(sc['oversize_delta']):>3}  "
+                f"{int(sc['initial_containers']):>8}  "
+                f"{int(sc['augmentations']):>7}  "
+                f"{float(sc['total_augmentation_mwh']):>10.2f}  "
+                f"{cr(float(sc['savings_npv'])):>17.4f}  "
+                f"{mark:>5}"
+            )
+        sep()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Plots
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -395,6 +498,191 @@ def plot_dashboard(params, y1, fi, data, output_path: Path) -> None:
     print(f"\n  Dashboard plot saved → {output_path}")
     plt.close()
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Augmentation lifecycle plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_augmentation(aug_result: dict, base_fi: dict, output_path: Path) -> None:
+    """
+    Four-panel visual summary of the augmentation analysis:
+
+      Panel 1  Annual plant CUF vs frozen Year-1 threshold, with event markers
+               (green = feasible augmentation, orange = best-effort).
+      Panel 2  Effective BESS energy (MWh) stacked per cohort (initial + each
+               augmentation), so the cohort model is legible at a glance.
+      Panel 3  Augmentation OPEX injection per year (bar), overlaid with
+               cumulative OPEX (line, twin axis).
+      Panel 4  Scenarios swept — Savings NPV vs initial-container count
+               (Optimized mode) OR the single realised scenario (other modes).
+    """
+    mode          = aug_result.get("mode", "disabled")
+    threshold_cuf = aug_result.get("threshold_cuf")
+    lifecycle     = aug_result.get("lifecycle_result", {}) or {}
+    events        = aug_result.get("augmentation_events", []) or []
+    scenarios     = aug_result.get("scenarios", []) or []
+    aug_fi        = aug_result.get("finance_result", {}) or {}
+
+    annual_cuf     = np.asarray(lifecycle.get("annual_cuf",   []), dtype=float)
+    eff_mwh_total  = np.asarray(lifecycle.get("annual_effective_mwh", []), dtype=float)
+    aug_opex_arr   = np.asarray(aug_fi.get("augmentation_opex_projection_rs",
+                                           lifecycle.get("augmentation_opex_rs", [])),
+                                dtype=float)
+
+    n_years = len(annual_cuf) if len(annual_cuf) else 25
+    years   = np.arange(1, n_years + 1)
+
+    # ── Palette ───────────────────────────────────────────────────────────────
+    C_CUF          = "#1976d2"
+    C_THRESH       = "#c62828"
+    C_EVT_FEAS     = "#43a047"
+    C_EVT_BESTEFF  = "#fb8c00"
+    C_OPEX_BAR     = "#8e24aa"
+    C_OPEX_CUMUL   = "#4a148c"
+    C_SCEN_LINE    = "#1565c0"
+    C_SCEN_PICK    = "#d81b60"
+    COHORT_CMAP    = plt.get_cmap("tab20")
+
+    fig = plt.figure(figsize=(18, 14))
+    fig.suptitle(
+        f"BESS Augmentation Profile — mode: {mode}"
+        + (f"   |   Threshold CUF: {threshold_cuf:.3f}%" if threshold_cuf is not None else ""),
+        fontsize=13, fontweight="bold", y=0.995,
+    )
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.28)
+
+    # ── Panel 1: CUF vs threshold + event markers ────────────────────────────
+    ax1 = fig.add_subplot(gs[0, 0])
+    if len(annual_cuf):
+        ax1.plot(years, annual_cuf, color=C_CUF, lw=2, marker="o", ms=3.5,
+                 label="Plant CUF (annual)")
+    if threshold_cuf is not None:
+        ax1.axhline(threshold_cuf, color=C_THRESH, lw=1.5, ls="--",
+                    label=f"Threshold = {threshold_cuf:.2f}%")
+    for ev in events:
+        y = int(ev["year"])
+        if 1 <= y <= n_years:
+            feas = bool(ev.get("feasible", True))
+            colr = C_EVT_FEAS if feas else C_EVT_BESTEFF
+            ax1.axvline(y, color=colr, lw=0.9, alpha=0.35, zorder=1)
+            yv = annual_cuf[y - 1] if len(annual_cuf) >= y else threshold_cuf or 0
+            ax1.plot(y, yv, marker="^", ms=11, color=colr,
+                     markeredgecolor="white", markeredgewidth=1.0, zorder=5)
+    # manual proxy legend entries for event markers
+    legend_extras = [
+        plt.Line2D([0], [0], marker="^", linestyle="None", color=C_EVT_FEAS,
+                   markersize=9, markeredgecolor="white", label="Feasible aug event"),
+        plt.Line2D([0], [0], marker="^", linestyle="None", color=C_EVT_BESTEFF,
+                   markersize=9, markeredgecolor="white", label="Best-effort aug event"),
+    ]
+    h, l = ax1.get_legend_handles_labels()
+    ax1.legend(h + legend_extras, l + [e.get_label() for e in legend_extras],
+               fontsize=8, loc="lower left")
+    ax1.set_title("Panel 1 — Plant CUF vs Threshold", fontweight="bold")
+    ax1.set_xlabel("Project year"); ax1.set_ylabel("Plant CUF (%)")
+    ax1.grid(True, alpha=0.25)
+
+    # ── Panel 2: Effective MWh stacked by cohort ─────────────────────────────
+    ax2 = fig.add_subplot(gs[0, 1])
+    # Reconstruct per-cohort effective MWh over time. We re-derive the SoH
+    # lookup inline (age ≤ 0 → 1.0, age > max → clamp) so we don't reach into
+    # the CohortManager's private helper.
+    cohorts    = lifecycle.get("cohorts", []) or []
+    cohort_mgr = lifecycle.get("cohort_manager", None)
+    stacks: list[tuple[str, np.ndarray]] = []
+    if cohort_mgr is not None and cohorts:
+        soh_curve   = cohort_mgr.soh_curve
+        max_age     = max(soh_curve.keys()) if soh_curve else 0
+
+        def soh_at(age: int) -> float:
+            if age <= 0:        return 1.0
+            if age > max_age:   return soh_curve[max_age]
+            return soh_curve[age]
+
+        for c in cohorts:
+            row = np.zeros(n_years)
+            for i, yr in enumerate(years):
+                if c.is_active(int(yr)):
+                    row[i] = c.capacity_mwh * soh_at(c.operating_age(int(yr)))
+            label = (f"Initial  ({c.containers} × container)"
+                     if c.installation_year == 0
+                     else f"Aug Y{c.installation_year}  ({c.containers} × container)")
+            stacks.append((label, row))
+    if stacks:
+        ax2.stackplot(
+            years,
+            *[s for _, s in stacks],
+            labels=[lbl for lbl, _ in stacks],
+            colors=[COHORT_CMAP(i % 20) for i in range(len(stacks))],
+            alpha=0.88,
+        )
+    elif len(eff_mwh_total):
+        ax2.fill_between(years, eff_mwh_total, alpha=0.5, color=C_CUF,
+                         label="Effective BESS energy")
+    ax2.set_title("Panel 2 — Effective BESS Energy by Cohort", fontweight="bold")
+    ax2.set_xlabel("Project year"); ax2.set_ylabel("Effective energy (MWh)")
+    ax2.legend(fontsize=7, loc="lower left", ncol=1)
+    ax2.grid(True, alpha=0.25)
+
+    # ── Panel 3: Aug OPEX injections ─────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 0])
+    if len(aug_opex_arr):
+        aug_opex_cr = aug_opex_arr / CRORE_TO_RS
+        ax3.bar(years, aug_opex_cr, color=C_OPEX_BAR, alpha=0.85,
+                label="Aug OPEX (annual)")
+        ax3r = ax3.twinx()
+        ax3r.plot(years, np.cumsum(aug_opex_cr), color=C_OPEX_CUMUL, lw=2,
+                  marker="o", ms=3, label="Cumulative Aug OPEX")
+        ax3r.set_ylabel("Cumulative (Rs Crore)", color=C_OPEX_CUMUL)
+        h1, l1 = ax3.get_legend_handles_labels()
+        h2, l2 = ax3r.get_legend_handles_labels()
+        ax3.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper left")
+    else:
+        ax3.text(0.5, 0.5, "No augmentation OPEX", transform=ax3.transAxes,
+                 ha="center", va="center", fontsize=11, color="#777777")
+    ax3.set_title("Panel 3 — Augmentation OPEX Injections", fontweight="bold")
+    ax3.set_xlabel("Project year"); ax3.set_ylabel("Annual (Rs Crore)")
+    ax3.grid(True, alpha=0.25)
+
+    # ── Panel 4: Scenarios (savings NPV vs oversize) ─────────────────────────
+    ax4 = fig.add_subplot(gs[1, 1])
+    if len(scenarios) > 1:
+        xs   = np.array([int(s["oversize_delta"])       for s in scenarios])
+        npvs = np.array([float(s["savings_npv"])        for s in scenarios]) / CRORE_TO_RS
+        best = int(aug_result.get("best_initial_containers", 0))
+        base_init = int(aug_result.get("best_initial_containers", 0)) - int(xs[-1] if len(xs) else 0)
+        # Plot the NPV curve
+        ax4.plot(xs, npvs, color=C_SCEN_LINE, lw=2, marker="o", ms=4,
+                 label="Savings NPV per scenario")
+        # Mark the pick
+        pick_idx = np.argmax(npvs)
+        ax4.plot(xs[pick_idx], npvs[pick_idx], marker="*", ms=18, color=C_SCEN_PICK,
+                 markeredgecolor="white", markeredgewidth=1,
+                 label=f"Best (Δn = {int(xs[pick_idx])})")
+        ax4.set_title("Panel 4 — Oversizing Scan (Optimized mode)", fontweight="bold")
+        ax4.set_xlabel("Oversizing Δ (containers above base)")
+        ax4.set_ylabel("Savings NPV (Rs Crore)")
+        ax4.legend(fontsize=8, loc="best")
+        ax4.grid(True, alpha=0.25)
+    else:
+        # Non-optimized modes: show base vs augmented NPV comparison bars
+        base_npv = float(base_fi.get("savings_npv", 0.0)) / CRORE_TO_RS
+        aug_npv  = float(aug_fi.get("savings_npv", 0.0)) / CRORE_TO_RS
+        bars = ax4.bar(["Base\n(no aug)", f"Augmented\n({mode})"],
+                       [base_npv, aug_npv],
+                       color=[C_CUF, C_EVT_FEAS], alpha=0.85)
+        for b, v in zip(bars, [base_npv, aug_npv]):
+            ax4.text(b.get_x() + b.get_width() / 2,
+                     b.get_height() + max(base_npv, aug_npv) * 0.01,
+                     f"{v:.2f}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+        ax4.set_title("Panel 4 — Savings NPV: Base vs Augmented", fontweight="bold")
+        ax4.set_ylabel("Savings NPV (Rs Crore)")
+        ax4.grid(True, axis="y", alpha=0.25)
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"  Augmentation plot saved → {output_path}")
+    plt.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -694,6 +982,21 @@ if __name__ == "__main__":
     print_section6(fi)
     print_section7(fi)
 
+    # ── Augmentation analysis (post-solver, base pipeline untouched) ─────────
+    aug_cfg_block = config.bess["bess"].get("augmentation", {}) or {}
+    aug_mode_str  = str(aug_cfg_block.get("mode", "optimized")).lower()
+    aug_years_cfg = aug_cfg_block.get("augmentation_years", []) or []
+
+    print(f"\nRunning augmentation analysis (mode: {aug_mode_str}) …")
+    aug_engine = AugmentationEngine(config, data, energy_engine)
+    aug_result = aug_engine.run(
+        sim_params               = y1["sim_params"],
+        base_initial_containers  = int(params["bess_containers"]),
+        mode                     = aug_mode_str,
+        augmentation_years       = aug_years_cfg if aug_mode_str == "fixed" else None,
+    )
+    print_section8_augmentation(aug_result, fi)
+
     sep("SOLVER STATS")
     print(f"\n  {'Trials completed':<38} : {result.n_trials_completed}")
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
@@ -702,4 +1005,5 @@ if __name__ == "__main__":
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
+    plot_augmentation(aug_result, fi, outputs_dir / "augmentation_profile.png")
     plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")

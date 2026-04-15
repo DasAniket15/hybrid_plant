@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_augmentation.py -v)",
+      "Bash(/c/Users/Aniket4.Das/AppData/Local/Programs/Python/Python313/python.exe -c ':*)",
+      "Bash(\"/c/Users/Aniket4.Das/AppData/Local/Programs/Python/Python313/python.exe\" -m pytest tests/test_augmentation.py -v)",
+      "Bash(\"/c/Users/Aniket4.Das/AppData/Local/Programs/Python/Python313/python.exe\" -m pytest tests/test_finance.py tests/test_energy.py -v)",
+      "Bash(\"/c/Users/Aniket4.Das/AppData/Local/Programs/Python/Python313/python.exe\" -m py_compile src/hybrid_plant/run_model.py)"
+    ]
+  }
+}

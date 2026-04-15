@@ -14,10 +14,29 @@ bess:
 
   augmentation:
     enabled: true
+    # Augmentation engine mode:
+    #   disabled  — skip augmentation (report base lifecycle only)
+    #   triggered — CUF-based augmentation on the base initial BESS size
+    #   fixed     — augment in user-specified years (see augmentation_years)
+    #   optimized — (default) explore initial oversizing + CUF trigger,
+    #               pick scenario with max client savings NPV
+    mode: "optimized"
+    # User-provided schedule for fixed mode (project-year indices, 1-based).
+    # Ignored unless mode == "fixed". Each listed year installs the minimum
+    # container count below.
+    augmentation_years: []
     restore_to_percent_of_year1: 100
     minimum_augmentation_containers: 1
+    # One-time OPEX hit per MWh of augmented capacity. Applied in the
+    # installation year only — never CAPEX, never depreciated.
     cost_per_mwh: 0.60e7
     opex_percent_of_capex: 2.0
+    # Upper bound on the oversizing search (# extra containers vs. base).
+    # The search typically terminates long before this cap is reached.
+    max_oversize_containers: 30
+    # How many consecutive non-improving oversizing steps to tolerate
+    # before the search stops (absorbs integer-discretisation noise).
+    oversize_patience: 1
 
   salvage:
     enabled: true
