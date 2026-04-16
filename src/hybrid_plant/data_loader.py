@@ -18,7 +18,7 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import HOURS_PER_YEAR, KWH_TO_MWH
+from hybrid_plant.constants import HOURS_PER_YEAR, MWH_TO_KWH
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
     # ── Load profile ─────────────────────────────────────────────────────────
     load_profile = _load_csv_column(_resolve(load_cfg["source_file"]))
     if load_cfg["unit"].lower() == "kwh":
-        load_profile = load_profile * KWH_TO_MWH   # kWh → MWh
+        load_profile = load_profile / MWH_TO_KWH   # kWh → MWh
     _validate_8760(load_profile, "Load profile")
 
     # ── Degradation curves ───────────────────────────────────────────────────
@@ -115,3 +115,27 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
         "wind_degradation_curve":   wind_deg,
         "bess_soh_curve":           bess_deg,
     }
+
+
+def load_soh_curve(config: FullConfig | None = None) -> dict[int, float]:
+    """
+    Load the BESS SOH curve as a ``{year: soh_fraction}`` dict.
+
+    Convenience helper used by run_model and augmentation modules.
+    If ``config`` is None, uses ``load_config()`` to discover the path.
+
+    Returns
+    -------
+    dict[int, float] — {1: 0.9953, 2: 0.9906, …, 25: 0.65xx}
+    """
+    if config is None:
+        from hybrid_plant.config_loader import load_config as _load_cfg
+        config = _load_cfg()
+
+    path = find_project_root() / config.bess["bess"]["degradation"]["file"]
+    if not path.exists():
+        raise FileNotFoundError(f"BESS SOH curve not found: {path}")
+
+    df = pd.read_csv(path)
+    df.columns = df.columns.str.strip().str.lower()
+    return dict(zip(df["year"].astype(int), df["soh"]))

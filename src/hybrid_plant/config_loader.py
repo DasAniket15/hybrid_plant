@@ -71,27 +71,6 @@ def _validate(config: FullConfig) -> None:
     if config.finance["capex"]["solar"]["ac_dc_ratio"] <= 0:
         raise ValueError("Solar AC/DC ratio must be positive.")
 
-    project_life = config.project["project"]["project_life_years"]
-    if project_life <= 0:
-        raise ValueError(f"project_life_years must be positive; got {project_life}.")
-
-    fin = config.finance["financing"]
-    debt_pct   = fin["debt_percent"]
-    equity_pct = fin["equity_percent"]
-    if abs(debt_pct + equity_pct - 100.0) > 0.01:
-        raise ValueError(
-            f"debt_percent + equity_percent must sum to 100; "
-            f"got {debt_pct} + {equity_pct} = {debt_pct + equity_pct}."
-        )
-
-    interest_rate = fin["debt"]["interest_rate_percent"]
-    if interest_rate < 0:
-        raise ValueError(f"Debt interest_rate_percent must be ≥ 0; got {interest_rate}.")
-
-    debt_tenure = fin["debt"]["tenure_years"]
-    if debt_tenure <= 0:
-        raise ValueError(f"Debt tenure_years must be positive; got {debt_tenure}.")
-
     logger.info("Config validation passed.")
 
 

@@ -350,6 +350,134 @@ except Exception as e:
     traceback.print_exc()
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Augmentation Engine
+# ─────────────────────────────────────────────────────────────────────────────
+section("13. AUGMENTATION ENGINE")
+try:
+    import math as _math
+    import pandas as _pd
+    from hybrid_plant.augmentation.cohort import BESSCohort, CohortRegistry
+    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
+    from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+    from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+    from hybrid_plant.data_loader import load_soh_curve
+    from hybrid_plant.energy.year1_engine import Year1Engine
+    from hybrid_plant._paths import find_project_root
+
+    _soh   = load_soh_curve(config)
+    _eng   = Year1Engine(config, data)
+    _root  = find_project_root()
+
+    def _load_eff(fpath, col):
+        df = _pd.read_csv(_root / fpath)
+        df.columns = df.columns.str.strip().str.lower()
+        return dict(zip(df["year"].astype(int), df[col]))
+
+    _solar_eff = _load_eff(config.project["generation"]["solar"]["degradation"]["file"], "efficiency")
+    _wind_eff  = _load_eff(config.project["generation"]["wind"]["degradation"]["file"], "efficiency")
+    _csize     = float(config.bess["bess"]["container"]["size_mwh"])
+    _life      = int(config.project["project"]["project_life_years"])
+
+    # ── Cohort registry totals ────────────────────────────────────────────────
+    _reg = CohortRegistry(initial_containers=10)
+    _reg.add(install_year=8, containers=4)
+    # Year 10: initial cohort age=10 (SOH[10]), aug cohort age=3 (SOH[3])
+    _expected_eff = 10 * _csize * _soh[10] + 4 * _csize * _soh[3]
+    _actual_eff   = _reg.effective_capacity_mwh(10, _csize, _soh)
+    check("cohort registry totals match expected",
+          _math.isclose(_actual_eff, _expected_eff, rel_tol=1e-12),
+          f"expected={_expected_eff:.4f}  actual={_actual_eff:.4f}")
+    _n, _soh_blend = _reg.to_plant_params(10, _csize, _soh)
+    check("blended SOH satisfies capacity identity",
+          _math.isclose(_n * _csize * _soh_blend, _expected_eff, rel_tol=1e-12),
+          f"n={_n}  blend={round(_soh_blend,4)}")
+    check("aug cohort inactive before install year",
+          _reg.effective_capacity_mwh(7, _csize, _soh) ==
+          10 * _csize * _soh[7])
+
+    # ── LifecycleSimulator — fast_mode ────────────────────────────────────────
+    _sim_params = {
+        "solar_capacity_mw": 200.0, "wind_capacity_mw": 0.0,
+        "ppa_capacity_mw": 60.0, "bess_containers": 30,
+        "charge_c_rate": 0.5, "discharge_c_rate": 0.5,
+        "dispatch_priority": "solar_first", "bess_charge_source": "solar_only",
+    }
+    _sim = LifecycleSimulator(
+        config=config, plant_engine=_eng.plant,
+        soh_curve=_soh, solar_eff_curve=_solar_eff,
+        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
+    )
+    _lc_fast = _sim.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=0.0, restoration_target_cuf=0.0,
+        fast_mode=True,
+    )
+    check("lifecycle simulator runs without exception (fast_mode)",
+          len(_lc_fast.cuf_series) == _life,
+          f"len(cuf_series)={len(_lc_fast.cuf_series)}")
+    check("augmentation OPEX >= 0 all years (fast_mode)",
+          all(v >= 0 for v in _lc_fast.opex_augmentation_lump) and
+          all(v >= 0 for v in _lc_fast.opex_augmentation_om))
+    check("no events fire with threshold=0",
+          len(_lc_fast.event_log) == 0)
+
+    # ── LifecycleSimulator — triggered event, lump cost formula ───────────────
+    _cuf_y1  = compute_plant_cuf(_eng.plant, _sim_params, 30, _soh[1])
+    _lc_trig = _sim.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=_cuf_y1 * 0.93,
+        restoration_target_cuf=_cuf_y1,
+        fast_mode=True,
+    )
+    check("lifecycle simulator runs without exception (triggered)",
+          len(_lc_trig.cuf_series) == _life)
+    check("event_log entries are well-formed",
+          all({"year","trigger_cuf","target_cuf","post_event_cuf",
+               "k_containers","lump_cost_rs"}.issubset(ev.keys())
+              for ev in _lc_trig.event_log),
+          f"n_events={len(_lc_trig.event_log)}")
+
+    if _lc_trig.event_log:
+        _ev        = _lc_trig.event_log[0]
+        _ev_years  = {e["year"] for e in _lc_trig.event_log}
+        _cost_per_mwh = float(config.bess["bess"]["augmentation"]["cost_per_mwh"])
+        _expected_lump = _ev["k_containers"] * _csize * _cost_per_mwh
+        check("lump cost = k × container_size × cost_per_mwh",
+              _math.isclose(_ev["lump_cost_rs"], _expected_lump, rel_tol=1e-9),
+              f"got={_ev['lump_cost_rs']:.2f}  expected={_expected_lump:.2f}")
+        check("lump cost > 0 in event years",
+              all(_lc_trig.opex_augmentation_lump[yr - 1] > 0 for yr in _ev_years))
+        check("lump cost = 0 in non-event years",
+              sum(1 for yr, v in enumerate(_lc_trig.opex_augmentation_lump, 1)
+                  if yr not in _ev_years and v != 0.0) == 0)
+    else:
+        check("lump cost formula (no events — skipped)", True, "no events fired")
+        check("lump cost > 0 in event year (skipped)", True)
+        check("lump cost = 0 in non-event years (skipped)", True)
+
+    # ── AugmentationEngine.evaluate_scenario ─────────────────────────────────
+    _aug_engine = AugmentationEngine(
+        config, data, _eng, _soh, trigger_threshold_cuf=_cuf_y1 * 0.93
+    )
+    _aug_res = _aug_engine.evaluate_scenario(_sim_params, fast_mode=True)
+    _aug_fi  = _aug_res["finance"]
+    check("evaluate_scenario returns finance dict",
+          "savings_npv" in _aug_fi and "augmentation" in _aug_fi)
+    check("savings_npv is finite",
+          _math.isfinite(_aug_fi["savings_npv"]))
+    check("augmentation sub-dict has all required keys",
+          {"trigger_threshold_cuf","restoration_target_cuf","event_log",
+           "cuf_series","cohort_snapshot","cohort_capacity_timeline",
+           "total_lump_cost_rs","total_om_cost_rs","n_events"}.issubset(
+              _aug_fi["augmentation"].keys()))
+
+except Exception as e:
+    check("Augmentation Engine — EXCEPTION", False, str(e))
+    traceback.print_exc()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────

@@ -21,13 +21,12 @@ dev = [
     "plotly",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/hybrid_plant"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts   = "-v"
-pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

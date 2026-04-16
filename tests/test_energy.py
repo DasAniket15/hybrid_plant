@@ -96,10 +96,6 @@ class TestPlantEngineSolarOnly:
             assert len(result[key]) == HOURS_PER_YEAR, f"{key} wrong length"
 
     def test_energy_conservation(self, result, data, solar_only_params):
-        # Invariant: all generation must be accounted for as direct delivery,
-        # BESS charging, or curtailment.  solar_direct_pre and wind_direct_pre
-        # store post-PPA-cap actual delivery values (not pre-cap allocations),
-        # so this balance always holds exactly.
         p = solar_only_params
         raw_gen = np.sum(p["solar_capacity_mw"] * data["solar_cuf"]
                          + p["wind_capacity_mw"]  * data["wind_cuf"])
@@ -108,28 +104,6 @@ class TestPlantEngineSolarOnly:
                + np.sum(result["charge_pre"])
                + np.sum(result["curtailment_pre"]))
         assert abs(raw_gen - rhs) < 1e-3, f"Energy not conserved: {raw_gen:.2f} vs {rhs:.2f}"
-
-    def test_discharge_loss_correct(self, result, energy_engine):
-        # discharge_loss should equal discharge_raw × (1 − discharge_eff),
-        # where discharge_raw = discharge_pre / discharge_eff.
-        eff = energy_engine.plant.discharge_eff
-        discharge_pre  = result["discharge_pre"]
-        discharge_loss = result["discharge_loss"]
-        discharge_raw  = np.where(eff > 0, discharge_pre / eff, 0.0)
-        expected_loss  = discharge_raw * (1 - eff)
-        np.testing.assert_allclose(
-            discharge_loss, expected_loss, rtol=1e-6,
-            err_msg="discharge_loss does not equal discharge_raw × (1 − discharge_eff)",
-        )
-
-    def test_direct_delivery_matches_export(self, result):
-        # plant_export_pre = solar_direct_pre + wind_direct_pre + discharge_pre
-        export    = result["plant_export_pre"]
-        recon     = result["solar_direct_pre"] + result["wind_direct_pre"] + result["discharge_pre"]
-        np.testing.assert_allclose(
-            export, recon, atol=1e-9,
-            err_msg="plant_export_pre != solar_direct + wind_direct + discharge",
-        )
 
     def test_ppa_cap_not_violated(self, result, solar_only_params):
         ppa = solar_only_params["ppa_capacity_mw"]

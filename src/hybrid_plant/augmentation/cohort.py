@@ -1,222 +1,242 @@
 """
 cohort.py
 ─────────
-Cohort-based BESS degradation model.
+BESS cohort data structures for the augmentation engine.
 
-Each physical BESS installation (the initial build or any subsequent
-augmentation) is represented by an independent ``BESSCohort``. Every cohort
-ages from *its own* installation year, so its State-of-Health (SoH) in any
-project year is read from the degradation curve at the cohort's operating
-age — NOT the project age.
+A "cohort" is a batch of BESS containers that share an install year and
+therefore degrade on the same timeline.  The plant starts with one cohort
+(the initial containers) and gains additional cohorts at each augmentation
+event.
 
-The plant's effective BESS energy at year Y is the sum of each active
-cohort's degraded capacity:
+Cohort age convention
+─────────────────────
+For a cohort installed at ``install_year``, its age in calendar year
+``year_t`` is:
 
-    effective_mwh(Y) = Σ  cohort.containers × container_size × soh[Y − cohort.installation_year]
-                      cohorts active in Y
+    age = year_t - install_year + 1
 
-Cohort lifecycle semantics
-──────────────────────────
-  installation_year = 0     initial cohort (installed at project start,
-                            operational from Year 1)
-  installation_year = K>0   augmentation installed during Year K,
-                            becomes operational from Year K+1
+This means:
+  • In the year of installation (year_t == install_year), age = 1.
+  • SOH for that year is ``soh_curve[1]``  (NOT 1.0 — the curve already
+    accounts for first-year degradation; using 1.0 would over-state
+    effective capacity for all fresh cohorts).
 
-  A cohort is "active" in project year Y iff Y > installation_year.
-  Its age for SoH lookup is (Y − installation_year), which maps 1..25 onto
-  the SoH CSV's year index — matching the existing single-battery model
-  exactly when no augmentations are present.
+The initial cohort uses ``install_year = 1`` (project Year 1), so its
+age in Year 1 is also 1, and ``soh_curve[1]`` is applied from the start.
+This is consistent with how ``EnergyProjection`` applies SOH to the
+original BESS fleet (it uses ``soh[year]`` where year starts at 1).
 
-Why this model
-──────────────
-  Collapsing cohorts into a single averaged SoH would under-credit a new
-  cohort (dragged down by old cohorts) and over-degrade old cohorts
-  (propped up by new ones). Keeping them independent preserves the physics
-  and allows the augmentation engine to correctly size additions.
+Cohort aggregation
+──────────────────
+When multiple cohorts are active, ``CohortRegistry.to_plant_params``
+translates the full cohort list into the ``(bess_containers, soh_factor)``
+pair expected by ``PlantEngine.simulate``:
+
+    total_containers = sum of all active cohort container counts
+    total_eff_mwh    = sum of (containers × container_size × soh[age])
+    blended_soh      = total_eff_mwh / (total_containers × container_size)
+
+This produces a single "blended" SOH factor that, when multiplied by
+the total container count and container size inside PlantEngine, yields
+exactly the correct total effective energy capacity.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any
 
 
-@dataclass
+# ─────────────────────────────────────────────────────────────────────────────
+# Cohort descriptor
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
 class BESSCohort:
     """
-    A single BESS installation event.
-
-    Attributes
-    ----------
-    installation_year : int
-        0 for the initial cohort (operational from Year 1); K > 0 for an
-        augmentation installed in Year K (operational from Year K+1).
-    containers : int
-        Physical number of containers — always a non-negative integer.
-        Fractional containers are not permitted.
-    capacity_mwh : float
-        Convenience field: containers × container_size_mwh (nameplate).
-    """
-
-    installation_year: int
-    containers:        int
-    capacity_mwh:      float
-
-    def __post_init__(self) -> None:
-        if self.installation_year < 0:
-            raise ValueError(
-                f"installation_year must be ≥ 0, got {self.installation_year}"
-            )
-        if self.containers < 0:
-            raise ValueError(
-                f"containers must be ≥ 0, got {self.containers}"
-            )
-        if not isinstance(self.containers, int):
-            raise TypeError(
-                f"containers must be an int (discrete sizing), "
-                f"got {type(self.containers).__name__}"
-            )
-
-    def is_active(self, year: int) -> bool:
-        """Cohort contributes in year Y iff Y > installation_year."""
-        return year > self.installation_year
-
-    def operating_age(self, year: int) -> int:
-        """Age of the cohort in project year Y (1 = first operational year)."""
-        return year - self.installation_year
-
-
-class CohortManager:
-    """
-    Manages the list of active BESS cohorts and exposes aggregate
-    quantities needed by the plant simulator.
-
-    The SoH curve is the same CSV used by ``EnergyProjection`` (indexed by
-    operating year 1..25). Age beyond the curve clamps to the last known
-    value — augmentations installed late enough to escape the curve are
-    effectively treated as still-degrading at the final-year rate.
+    Immutable descriptor for a single batch of BESS containers.
 
     Parameters
     ----------
-    container_size_mwh : float
-        MWh per physical container (from ``bess.yaml``).
-    soh_curve : dict[int, float]
-        {operating_year: soh_factor} loaded from the SoH CSV. Must contain
-        at least key 1 → soh at end of first operational year.
+    install_year : int
+        Calendar project year in which this cohort was installed.
+        Use 1 for the initial cohort; event cohorts use the event year.
+    containers : int
+        Number of physical BESS containers in this cohort.
     """
 
-    def __init__(
+    install_year: int
+    containers:   int
+
+    def age(self, year_t: int) -> int:
+        """
+        Return this cohort's age in calendar year ``year_t``.
+
+        Age is 1 in the install year, 2 the following year, etc.
+        Returns 0 (inactive) for years before installation.
+        """
+        return year_t - self.install_year + 1
+
+    def is_active(self, year_t: int) -> bool:
+        """True if this cohort has been installed by ``year_t``."""
+        return year_t >= self.install_year
+
+    def effective_capacity_mwh(
         self,
-        container_size_mwh: float,
-        soh_curve:          dict[int, float],
-    ) -> None:
-        if container_size_mwh <= 0:
-            raise ValueError("container_size_mwh must be > 0")
-        if not soh_curve:
-            raise ValueError("soh_curve must not be empty")
-
-        self.container_size: float = float(container_size_mwh)
-        self.soh_curve:      dict[int, float] = dict(soh_curve)
-        self._max_curve_age: int = max(self.soh_curve.keys())
-        self.cohorts:        list[BESSCohort] = []
-
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def add_initial(self, containers: int) -> BESSCohort:
-        """Register the initial (Year-1) cohort. Only one is allowed."""
-        if any(c.installation_year == 0 for c in self.cohorts):
-            raise RuntimeError("Initial cohort already registered.")
-        cohort = BESSCohort(
-            installation_year=0,
-            containers=int(containers),
-            capacity_mwh=int(containers) * self.container_size,
-        )
-        self.cohorts.append(cohort)
-        return cohort
-
-    def add_augmentation(self, installation_year: int, containers: int) -> BESSCohort:
-        """Append a new cohort installed in ``installation_year`` (must be ≥ 1)."""
-        if installation_year < 1:
-            raise ValueError(
-                f"Augmentation installation_year must be ≥ 1, got {installation_year}"
-            )
-        cohort = BESSCohort(
-            installation_year=int(installation_year),
-            containers=int(containers),
-            capacity_mwh=int(containers) * self.container_size,
-        )
-        self.cohorts.append(cohort)
-        return cohort
-
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _soh_at_age(self, age: int) -> float:
+        year_t:         int,
+        container_size: float,
+        soh_curve:      dict[int, float],
+    ) -> float:
         """
-        SoH factor at a given cohort operating age.
+        Effective energy capacity of this cohort in ``year_t`` (MWh).
 
-        Age 0 (installed-this-year, not yet operational) → 1.0. Ages beyond
-        the curve clamp to the last available value (no SoH curve provides
-        data for ages > 25 in this model).
+        Applies the SOH value from ``soh_curve`` at this cohort's age.
+        Returns 0.0 if the cohort is not yet active.
         """
-        if age <= 0:
-            return 1.0
-        if age > self._max_curve_age:
-            return self.soh_curve[self._max_curve_age]
-        return self.soh_curve[age]
-
-    def active_cohorts(self, year: int) -> list[BESSCohort]:
-        return [c for c in self.cohorts if c.is_active(year)]
-
-    def total_containers(self, year: int) -> int:
-        return sum(c.containers for c in self.active_cohorts(year))
-
-    def nameplate_mwh(self, year: int) -> float:
-        """Sum of nameplate capacity across all active cohorts in year Y."""
-        return sum(c.capacity_mwh for c in self.active_cohorts(year))
-
-    def effective_mwh(self, year: int) -> float:
-        """
-        Degraded energy capacity in year Y:
-            Σ cohort.capacity_mwh × soh[cohort.operating_age(Y)]
-        """
-        total = 0.0
-        for c in self.active_cohorts(year):
-            total += c.capacity_mwh * self._soh_at_age(c.operating_age(year))
-        return total
-
-    def aggregate_soh_factor(self, year: int) -> float:
-        """
-        Aggregate SoH ratio that, when passed to ``PlantEngine.simulate`` as
-        ``bess_soh_factor`` together with ``bess_containers = total_containers``,
-        reproduces the exact cohort-summed effective MWh.
-
-        This mapping preserves PlantEngine's existing contract — effective
-        energy = containers × container_size × soh_factor — so no plant-side
-        code changes are required.
-
-        Returns 0.0 if no cohort is active (pre-install years).
-        """
-        nameplate = self.nameplate_mwh(year)
-        if nameplate <= 0:
+        if not self.is_active(year_t):
             return 0.0
-        return self.effective_mwh(year) / nameplate
+        age = self.age(year_t)
+        soh = soh_curve.get(age, soh_curve[max(soh_curve)])  # clamp at curve end
+        return self.containers * container_size * soh
 
-    # ─────────────────────────────────────────────────────────────────────────
 
-    def augmentation_events(self) -> list[tuple[int, int, float]]:
-        """Return (installation_year, containers, capacity_mwh) for augmentations only."""
-        return [
-            (c.installation_year, c.containers, c.capacity_mwh)
-            for c in self.cohorts
-            if c.installation_year >= 1
+# ─────────────────────────────────────────────────────────────────────────────
+# Cohort registry
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CohortRegistry:
+    """
+    Mutable list-of-cohorts manager with helpers for per-year aggregation.
+
+    The registry begins with a single initial cohort (install_year=1).
+    Augmentation events add further cohorts via ``add()``.
+
+    Parameters
+    ----------
+    initial_containers : int
+        Number of BESS containers in the initial (project-start) cohort.
+    """
+
+    def __init__(self, initial_containers: int) -> None:
+        self._cohorts: list[BESSCohort] = [
+            BESSCohort(install_year=1, containers=initial_containers)
         ]
 
-    def snapshot(self) -> list[BESSCohort]:
-        """Return a shallow copy of the cohort list (for logging/reporting)."""
-        return list(self.cohorts)
+    # ── Mutation ──────────────────────────────────────────────────────────────
+
+    def add(self, install_year: int, containers: int) -> None:
+        """
+        Register a new augmentation cohort.
+
+        Parameters
+        ----------
+        install_year : int
+            Calendar year in which the fresh containers are installed.
+        containers   : int
+            Number of new containers added in this event.
+        """
+        self._cohorts.append(BESSCohort(install_year=install_year, containers=containers))
+
+    # ── Aggregation helpers ───────────────────────────────────────────────────
+
+    def total_containers(self, year_t: int) -> int:
+        """Total physical container count active in ``year_t``."""
+        return sum(c.containers for c in self._cohorts if c.is_active(year_t))
+
+    def effective_capacity_mwh(
+        self,
+        year_t:         int,
+        container_size: float,
+        soh_curve:      dict[int, float],
+    ) -> float:
+        """
+        Sum of effective energy capacity across all active cohorts in ``year_t``.
+
+        Parameters
+        ----------
+        year_t         : calendar project year (1-indexed)
+        container_size : MWh nameplate per container (from bess.yaml)
+        soh_curve      : {age: soh_fraction} dict loaded from CSV
+
+        Returns
+        -------
+        float — total effective MWh across all active cohorts
+        """
+        return sum(
+            c.effective_capacity_mwh(year_t, container_size, soh_curve)
+            for c in self._cohorts
+            if c.is_active(year_t)
+        )
+
+    def to_plant_params(
+        self,
+        year_t:         int,
+        container_size: float,
+        soh_curve:      dict[int, float],
+    ) -> tuple[int, float]:
+        """
+        Translate the full cohort list into ``(total_containers, blended_soh_factor)``
+        for direct use with ``PlantEngine.simulate(bess_containers=..., bess_soh_factor=...)``.
+
+        The blended SOH factor is defined so that:
+
+            total_containers × container_size × blended_soh == total_effective_mwh
+
+        Parameters
+        ----------
+        year_t         : calendar project year (1-indexed)
+        container_size : MWh nameplate per container
+        soh_curve      : {age: soh_fraction} dict
+
+        Returns
+        -------
+        (total_containers, blended_soh_factor) — ready for PlantEngine.simulate
+        """
+        total_containers = self.total_containers(year_t)
+        if total_containers == 0:
+            return 0, 0.0
+        total_eff_mwh = self.effective_capacity_mwh(year_t, container_size, soh_curve)
+        blended_soh   = total_eff_mwh / (total_containers * container_size)
+        return total_containers, blended_soh
+
+    # ── Per-cohort capacity timeline ──────────────────────────────────────────
+
+    def cohort_capacity_timeline(
+        self,
+        project_life:   int,
+        container_size: float,
+        soh_curve:      dict[int, float],
+    ) -> dict[int, list[float]]:
+        """
+        Return per-cohort effective MWh for each project year.
+
+        Returns
+        -------
+        dict mapping cohort index (0-based) to a list of length ``project_life``
+        where each element is that cohort's effective MWh in year (index+1).
+        Used for the stacked-area augmentation dashboard panel.
+        """
+        timeline: dict[int, list[float]] = {}
+        for idx, cohort in enumerate(self._cohorts):
+            timeline[idx] = [
+                cohort.effective_capacity_mwh(year, container_size, soh_curve)
+                for year in range(1, project_life + 1)
+            ]
+        return timeline
+
+    # ── Introspection ─────────────────────────────────────────────────────────
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return a list of dicts describing all cohorts (for dashboard logging)."""
+        return [
+            {"cohort_index": i, "install_year": c.install_year, "containers": c.containers}
+            for i, c in enumerate(self._cohorts)
+        ]
+
+    @property
+    def cohorts(self) -> list[BESSCohort]:
+        """Read-only view of the cohort list."""
+        return list(self._cohorts)
 
     def __len__(self) -> int:
-        return len(self.cohorts)
-
-    def __iter__(self) -> Iterable[BESSCohort]:
-        return iter(self.cohorts)
+        return len(self._cohorts)
