@@ -13,16 +13,25 @@ bess:
     file: "data/bess_soh_curve.csv"
 
   augmentation:
-    enabled: true
+    enabled: false
     solver_aware: false                          # only relevant when enabled=true
 
     mode: "optimized"                           # optimized | triggered | fixed (only optimized used in current scope; others are stubs)
 
     cost_per_mwh: 0.60e7                        # Rs per MWh of new container capacity (lump-sum procurement)
 
+    # Trigger tolerance: fire augmentation only when
+    #   cuf_t < trigger_threshold_cuf − trigger_tolerance_pp
+    # Expressed in PERCENTAGE POINTS (e.g. 0.0001 = 1e-4 pp).
+    # Purpose: suppress float-noise trigger events where cuf_t is effectively
+    # equal to the threshold but drifts infinitesimally below due to numerical
+    # noise in the dispatch simulation. 1e-4 pp is tight enough to fire on
+    # genuine degradation (~0.5 pp per year) while ignoring ~1e-6 float noise.
+    trigger_tolerance_pp: 0.0001
+
     # Sizing constraints
     minimum_augmentation_containers: 1          # k >= this for any event
-    max_augmentation_containers_per_event: 50   # safety cap; emits warning if hit
+    max_augmentation_containers_per_event: 1000   # safety cap; emits warning if hit
 
     # mode=fixed only (stub for future use)
     fixed_schedule: []                          # e.g. [{year: 7, containers: 4}, {year: 14, containers: 3}]

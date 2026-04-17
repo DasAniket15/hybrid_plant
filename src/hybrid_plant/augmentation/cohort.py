@@ -17,14 +17,14 @@ For a cohort installed at ``install_year``, its age in calendar year
 
 This means:
   • In the year of installation (year_t == install_year), age = 1.
-  • SOH for that year is ``soh_curve[1]``  (NOT 1.0 — the curve already
-    accounts for first-year degradation; using 1.0 would over-state
-    effective capacity for all fresh cohorts).
+  • SOH for that year is **1.0** — the cohort is fresh and has not yet
+    experienced any degradation.
+  • For age ≥ 2, SOH is ``soh_curve[age - 1]`` (end-of-prior-year value).
+    See ``data_loader.operating_value`` for the full convention.
 
 The initial cohort uses ``install_year = 1`` (project Year 1), so its
-age in Year 1 is also 1, and ``soh_curve[1]`` is applied from the start.
-This is consistent with how ``EnergyProjection`` applies SOH to the
-original BESS fleet (it uses ``soh[year]`` where year starts at 1).
+age in Year 1 is 1 and it operates at SOH = 1.0.  This is consistent
+with the end-of-year degradation convention used throughout.
 
 Cohort aggregation
 ──────────────────
@@ -90,13 +90,18 @@ class BESSCohort:
         """
         Effective energy capacity of this cohort in ``year_t`` (MWh).
 
-        Applies the SOH value from ``soh_curve`` at this cohort's age.
+        Applies the **operating** SOH for this cohort's age in year_t, using
+        the end-of-year curve convention (see ``data_loader.operating_value``):
+          • age == 1 → SOH = 1.0 (fresh cohort in its install year)
+          • age >= 2 → SOH = soh_curve[age - 1]
+
         Returns 0.0 if the cohort is not yet active.
         """
+        from hybrid_plant.data_loader import operating_value
         if not self.is_active(year_t):
             return 0.0
         age = self.age(year_t)
-        soh = soh_curve.get(age, soh_curve[max(soh_curve)])  # clamp at curve end
+        soh = operating_value(soh_curve, age)
         return self.containers * container_size * soh
 
 

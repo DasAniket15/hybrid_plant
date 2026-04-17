@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
+from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
 from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant._paths import find_project_root
@@ -140,9 +140,10 @@ class AugmentationEngine:
         )
 
         # ── Step 2: Restoration target = this scenario's Year-1 CUF ───────
-        n0, soh0 = params["bess_containers"], self._soh_curve.get(1, 1.0)
+        # Uses the same simple formula: busbar / (PPA × 8760) × 100.
         restoration_target_cuf = compute_plant_cuf(
-            self._engine.plant, params, n0, soh0
+            year1_busbar_mwh(year1),
+            params["ppa_capacity_mw"],
         )
 
         # ── Step 3: Lifecycle simulation ───────────────────────────────────
@@ -183,6 +184,7 @@ class AugmentationEngine:
             "restoration_target_cuf":   restoration_target_cuf,
             "event_log":                lc_result.event_log,
             "cuf_series":               lc_result.cuf_series,
+            "adjusted_target_series":   lc_result.adjusted_target_series,
             "cohort_snapshot":          lc_result.cohort_snapshot,
             "cohort_capacity_timeline": lc_result.cohort_capacity_timeline,
             "opex_augmentation_lump":   lc_result.opex_augmentation_lump,

@@ -10,32 +10,69 @@ parameters (solar, wind, BESS containers, C-rates, PPA) plus the fixed
 trigger threshold from Pass 1, it:
 
   1. Simulates each project year with the correct blended SOH for all
-     active cohorts.
-  2. Detects when Plant CUF falls below ``trigger_threshold_cuf``.
+     active cohorts AND year-t solar/wind operating efficiencies.
+  2. Detects when Plant CUF falls below ``trigger_threshold_cuf`` by more
+     than ``trigger_tolerance_pp`` percentage points (suppresses float-
+     noise triggers at the margin).
   3. At each triggered year, searches for the smallest k containers that
-     restore CUF back to ``restoration_target_cuf`` (this scenario's own
-     Year-1 CUF), then continues searching in case larger k improves NPV.
+     restore CUF back to the **adjusted** restoration target
+     (Y1 CUF × solar_eff_ratio × wind_eff_ratio — honest about what
+     augmentation can actually recover), then continues searching in case
+     larger k improves NPV.
   4. Returns per-year energy arrays compatible with EnergyProjection
      outputs, plus augmentation OPEX series, an event log, and metadata
      for the dashboard.
 
+CUF formula (blended, single source of truth)
+──────────────────────────────────────────────
+    CUF_t (%) = busbar_t_MWh / (PPA_MW × 8760) × 100
+
+This is the naive formula from ``cuf_evaluator.compute_plant_cuf``.  It
+responds to all three degradation sources (solar, wind, BESS) simultaneously
+because busbar_t is computed with year-t operating values for all three.
+
+Restoration target (adjusted)
+──────────────────────────────
+For year t, the adjusted target is:
+
+    target_t = Y1_CUF × operating_value(solar_eff, t) × operating_value(wind_eff, t)
+              [weighted by the Y1 share of solar vs wind contribution]
+
+Rationale: augmentation can restore BESS capacity but cannot replace
+degraded solar panels or wind turbines.  A fixed target equal to Y1 CUF
+is structurally unreachable in late years once solar/wind have aged,
+which would cause the k-search to fruitlessly hit max_k and warn every
+year.  The adjusted target reflects what augmentation CAN reach.
+
+Warning behaviour: warn only if post-event CUF < adjusted_target_t
+(i.e. "we failed to restore even what was achievable").  Events that
+reach adjusted_target but not the hard Y1 threshold fire silently —
+this is expected in late years and not a bug.
+
+Hard requirement: when augmentation is enabled, the post-event CUF
+should not fall below ``trigger_threshold_cuf`` in any year.  If the
+adjusted target permits this, it means solar+wind alone have degraded
+past the threshold and no amount of augmentation can help.  That
+condition is flagged separately with a "threshold unreachable" warning.
+
 fast_mode contract
 ──────────────────
   fast_mode=True  (used inside Pass 2 Optuna trials):
-      Per-year Plant CUF is approximated by scaling an "anchor" CUF using
-      the ratio of current blended SOH to anchor blended SOH:
+      Per-year Plant CUF is approximated from scalar-scaled energy:
 
-          cuf_t ≈ cuf_anchor × (blended_soh_t / blended_soh_anchor)
+          busbar_t ≈ anchor_busbar × (solar_eff[t] × solar_share_anchor
+                                     + wind_eff[t]  × wind_share_anchor
+                                     + soh[t]       × battery_share_anchor)
 
       The anchor is the last year for which we ran a real simulation
       (initially Year 1; updated to the post-event year after each event).
-      Energy totals are also approximated by scaling Year-1 actuals.
       Per-year plant_engine.simulate() calls occur only for Year 1 and
       immediately after each augmentation event.
 
   fast_mode=False (used for final best-result reporting):
       Full plant_engine.simulate() call every year with that year's exact
-      blended SOH.  Accurate non-linear interactions are captured.
+      blended SOH and solar/wind operating efficiencies.  Captures non-
+      linear interactions between degraded streams.
 
 Augmentation cost accounting
 ─────────────────────────────
@@ -53,7 +90,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -61,7 +98,8 @@ import numpy as np
 from hybrid_plant.augmentation.cohort import CohortRegistry
 from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import LAKH_TO_RS
+from hybrid_plant.constants import HOURS_PER_YEAR, LAKH_TO_RS
+from hybrid_plant.data_loader import operating_value
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +125,7 @@ class LifecycleResult:
                                   cohorts active in each year (Rs)
     event_log                  : list[dict]  — one record per augmentation event
     cuf_series                 : list[float] — Plant CUF (%) for each year
+    adjusted_target_series     : list[float] — adjusted restoration target (%) per year
     cohort_snapshot            : list[dict]  — final cohort list (for dashboard)
     cohort_capacity_timeline   : dict[int, list[float]] — per-cohort effective MWh/yr
     """
@@ -96,6 +135,7 @@ class LifecycleResult:
     opex_augmentation_om:      list[float]
     event_log:                 list[dict[str, Any]]
     cuf_series:                list[float]
+    adjusted_target_series:    list[float]
     cohort_snapshot:           list[dict[str, Any]]
     cohort_capacity_timeline:  dict[int, list[float]]
 
@@ -141,6 +181,7 @@ class LifecycleSimulator:
         self._cost_per_mwh    = float(aug_cfg["cost_per_mwh"])
         self._min_k           = int(aug_cfg.get("minimum_augmentation_containers", 1))
         self._max_k           = int(aug_cfg.get("max_augmentation_containers_per_event", 50))
+        self._trigger_tol_pp  = float(aug_cfg.get("trigger_tolerance_pp", 0.0))
 
         # BESS O&M rate (Rs per MWh) — no escalation, from finance.yaml
         bess_om_lakh_per_mwh   = config.finance["opex"]["bess"]["rate_lakh_per_mwh"]
@@ -164,16 +205,18 @@ class LifecycleSimulator:
         params                 : solar_mw, wind_mw, ppa_mw, c-rates, dispatch settings
         initial_containers     : BESS container count at project start
         trigger_threshold_cuf  : CUF floor from Pass-1 baseline (fixed across all trials)
-        restoration_target_cuf : This scenario's own Year-1 CUF (per-trial target)
-        fast_mode              : True → approximate CUF and energy; False → full re-sim
+        restoration_target_cuf : This scenario's own Year-1 CUF (basis for adjusted target)
+        fast_mode              : True → approximate; False → full re-sim each year
 
         Returns
         -------
         LifecycleResult
         """
-        registry  = CohortRegistry(initial_containers)
-        project_life  = self._project_life
-        container_size = self._container_size
+        registry        = CohortRegistry(initial_containers)
+        project_life    = self._project_life
+        container_size  = self._container_size
+        ppa_mw          = float(params["ppa_capacity_mw"])
+        eps             = self._trigger_tol_pp
 
         # Accumulators
         solar_arr   = np.zeros(project_life)
@@ -181,22 +224,19 @@ class LifecycleSimulator:
         battery_arr = np.zeros(project_life)
         pre_arr     = np.zeros(project_life)
         meter_arr   = np.zeros(project_life)
-        cuf_series: list[float]  = []
-        event_log:  list[dict]   = []
+        cuf_series:             list[float]  = []
+        adjusted_target_series: list[float]  = []
+        event_log:              list[dict]   = []
 
         # Augmentation OPEX accumulators (length = project_life)
-        opex_lump = [0.0] * project_life   # one-time procurement in event year
-        opex_om   = [0.0] * project_life   # recurring O&M from NEW cohorts only
-
-        # fast_mode anchor state — updated after each event
-        anchor_cuf = 0.0
-        anchor_soh = 0.0
-        anchor_y1_sim: dict[str, Any] | None = None  # Year-1 or post-event full sim
+        opex_lump = [0.0] * project_life
+        opex_om   = [0.0] * project_life
 
         # ── Year 1: always a full real simulation ──────────────────────────
-        n0, soh0  = registry.to_plant_params(1, container_size, self._soh_curve)
-        solar_eff1 = self._solar_eff.get(1, 1.0)
-        wind_eff1  = self._wind_eff.get(1, 1.0)
+        # New convention: operating value = 1.0 for year 1 (fresh plant).
+        n0, soh0    = registry.to_plant_params(1, container_size, self._soh_curve)
+        solar_eff1  = operating_value(self._solar_eff, 1)    # = 1.0
+        wind_eff1   = operating_value(self._wind_eff, 1)     # = 1.0
 
         yr1 = self._plant.simulate(
             solar_capacity_mw  = params["solar_capacity_mw"] * solar_eff1,
@@ -208,7 +248,7 @@ class LifecycleSimulator:
             dispatch_priority  = params["dispatch_priority"],
             bess_charge_source = params["bess_charge_source"],
             loss_factor        = self._loss_factor,
-            bess_soh_factor    = soh0,
+            bess_soh_factor    = soh0,   # = 1.0 for fresh cohort age 1
         )
         s1 = float(np.sum(yr1["solar_direct_pre"]))
         w1 = float(np.sum(yr1["wind_direct_pre"]))
@@ -217,26 +257,63 @@ class LifecycleSimulator:
         wind_arr[0]    = w1
         battery_arr[0] = b1
         pre_arr[0]     = s1 + w1 + b1
-        meter_arr[0]   = (s1 + w1 + b1) * self._loss_factor
+        meter_arr[0]   = pre_arr[0] * self._loss_factor
 
-        cuf_y1 = compute_plant_cuf(self._plant, params, n0, soh0)
+        cuf_y1 = compute_plant_cuf(pre_arr[0], ppa_mw)
         cuf_series.append(cuf_y1)
-        anchor_cuf     = cuf_y1
-        anchor_soh     = soh0
-        anchor_y1_sim  = yr1
+        adjusted_target_series.append(restoration_target_cuf)  # Y1 target = Y1 itself
+
+        # Fast-mode anchor state — tracks the last "true" simulation point
+        # and the Year-1 share of each stream for scalar scaling.
+        anchor_year          = 1
+        anchor_solar_busbar  = s1
+        anchor_wind_busbar   = w1
+        anchor_battery_busbar = b1
+        anchor_solar_eff     = solar_eff1
+        anchor_wind_eff      = wind_eff1
+        anchor_soh           = soh0
 
         # ── Years 2–25 ────────────────────────────────────────────────────
-        for i, year in enumerate(range(2, project_life + 1)):
-            year_idx = year - 1  # 0-based position: year 2 → idx 1, year 3 → idx 2, …
+        for year in range(2, project_life + 1):
+            year_idx  = year - 1
             n_cont, blended_soh = registry.to_plant_params(year, container_size, self._soh_curve)
-            solar_eff = self._solar_eff.get(year, 1.0)
-            wind_eff  = self._wind_eff.get(year, 1.0)
+            solar_eff = operating_value(self._solar_eff, year)
+            wind_eff  = operating_value(self._wind_eff,  year)
 
-            if fast_mode:
-                # ── Approximate CUF via SOH ratio ─────────────────────────
-                cuf_t = anchor_cuf * (blended_soh / anchor_soh) if anchor_soh > 0 else 0.0
+            # Adjusted restoration target for this year — the Y1 CUF that's
+            # achievable given CURRENT solar/wind operating values.  (BESS
+            # factor is 1.0 because augmentation CAN restore it.)
+            # We scale Y1 CUF by the share-weighted combination of solar/wind
+            # degradation, using Y1 contribution shares.
+            y1_total = s1 + w1 + b1
+            if y1_total > 0:
+                solar_share = s1 / y1_total
+                wind_share  = w1 / y1_total
+                battery_share = b1 / y1_total
+                # Degradation factor applied to each stream for this year
+                deg_factor = (
+                    solar_share   * solar_eff
+                    + wind_share  * wind_eff
+                    + battery_share * 1.0    # BESS fully restorable by aug
+                )
+                adjusted_target = restoration_target_cuf * deg_factor
             else:
-                # ── Full re-simulation ────────────────────────────────────
+                adjusted_target = restoration_target_cuf
+            adjusted_target_series.append(adjusted_target)
+
+            # ── Compute per-year energy & CUF ─────────────────────────────
+            if fast_mode:
+                # Scalar-scale anchor busbar by per-stream operating-value ratios
+                solar_t = anchor_solar_busbar  * (solar_eff / anchor_solar_eff) if anchor_solar_eff > 0 else 0.0
+                wind_t  = anchor_wind_busbar   * (wind_eff  / anchor_wind_eff)  if anchor_wind_eff  > 0 else 0.0
+                batt_t  = anchor_battery_busbar * (blended_soh / anchor_soh)    if anchor_soh > 0 else 0.0
+                solar_arr[year_idx]   = solar_t
+                wind_arr[year_idx]    = wind_t
+                battery_arr[year_idx] = batt_t
+                pre_arr[year_idx]     = solar_t + wind_t + batt_t
+                meter_arr[year_idx]   = pre_arr[year_idx] * self._loss_factor
+                cuf_t = compute_plant_cuf(pre_arr[year_idx], ppa_mw)
+            else:
                 yr = self._plant.simulate(
                     solar_capacity_mw  = params["solar_capacity_mw"] * solar_eff,
                     wind_capacity_mw   = params["wind_capacity_mw"]  * wind_eff,
@@ -252,77 +329,63 @@ class LifecycleSimulator:
                 solar_arr[year_idx]   = float(np.sum(yr["solar_direct_pre"]))
                 wind_arr[year_idx]    = float(np.sum(yr["wind_direct_pre"]))
                 battery_arr[year_idx] = float(np.sum(yr["discharge_pre"]))
-                pre_arr[year_idx]     = solar_arr[year_idx] + wind_arr[year_idx] + battery_arr[year_idx]
+                pre_arr[year_idx]     = (solar_arr[year_idx] + wind_arr[year_idx]
+                                         + battery_arr[year_idx])
                 meter_arr[year_idx]   = pre_arr[year_idx] * self._loss_factor
-                cuf_t          = compute_plant_cuf(self._plant, params, n_cont, blended_soh)
+                cuf_t = compute_plant_cuf(pre_arr[year_idx], ppa_mw)
 
             cuf_series.append(cuf_t)
 
-            # ── Augmentation check (never in Year 1) ──────────────────────
-            if year > 1 and cuf_t < trigger_threshold_cuf:
-                best_k, post_event_cuf = self._find_best_k(
-                    params, year, registry, trigger_threshold_cuf, restoration_target_cuf,
-                    solar_eff, wind_eff,
+            # ── Augmentation check (with tolerance) ───────────────────────
+            if cuf_t < (trigger_threshold_cuf - eps):
+                best_k, post_event_cuf, post_event_sim = self._find_best_k(
+                    params, year, registry, solar_eff, wind_eff,
+                    adjusted_target, trigger_threshold_cuf, ppa_mw,
                 )
 
                 # Register the event cohort
                 registry.add(install_year=year, containers=best_k)
 
                 # Compute costs
-                new_mwh     = best_k * container_size
-                lump_cost   = new_mwh * self._cost_per_mwh
-                annual_om   = new_mwh * self._bess_om_rate_rs
-
-                # Lump-sum in event year only
+                new_mwh   = best_k * container_size
+                lump_cost = new_mwh * self._cost_per_mwh
+                annual_om = new_mwh * self._bess_om_rate_rs
                 opex_lump[year_idx] = lump_cost
-
-                # Recurring O&M from this new cohort: event_year → year 25
                 for om_i in range(year_idx, project_life):
                     opex_om[om_i] += annual_om
 
                 event_log.append({
-                    "year":           year,
-                    "trigger_cuf":    cuf_t,
-                    "target_cuf":     restoration_target_cuf,
-                    "post_event_cuf": post_event_cuf,
-                    "k_containers":   best_k,
-                    "lump_cost_rs":   lump_cost,
+                    "year":               year,
+                    "trigger_cuf":        cuf_t,
+                    "adjusted_target":    adjusted_target,
+                    "hard_threshold":     trigger_threshold_cuf,
+                    "post_event_cuf":     post_event_cuf,
+                    "reached_adjusted":   post_event_cuf >= adjusted_target - 1e-9,
+                    "reached_hard":       post_event_cuf >= trigger_threshold_cuf - 1e-9,
+                    "k_containers":       best_k,
+                    "lump_cost_rs":       lump_cost,
                 })
 
-                # ── Re-anchor CUF and re-compute energy for this year ─────
-                n_post, soh_post = registry.to_plant_params(year, container_size, self._soh_curve)
-                anchor_cuf = post_event_cuf
-                anchor_soh = soh_post
+                # ── Update this year's energy to post-event values ────────
+                if post_event_sim is not None:
+                    solar_arr[year_idx]   = float(np.sum(post_event_sim["solar_direct_pre"]))
+                    wind_arr[year_idx]    = float(np.sum(post_event_sim["wind_direct_pre"]))
+                    battery_arr[year_idx] = float(np.sum(post_event_sim["discharge_pre"]))
+                    pre_arr[year_idx]     = (solar_arr[year_idx] + wind_arr[year_idx]
+                                             + battery_arr[year_idx])
+                    meter_arr[year_idx]   = pre_arr[year_idx] * self._loss_factor
+                    cuf_series[-1]        = post_event_cuf
 
-                # Energy re-sim after augmentation (always, even in fast_mode)
-                yr_post = self._plant.simulate(
-                    solar_capacity_mw  = params["solar_capacity_mw"] * solar_eff,
-                    wind_capacity_mw   = params["wind_capacity_mw"]  * wind_eff,
-                    bess_containers    = n_post,
-                    charge_c_rate      = params["charge_c_rate"],
-                    discharge_c_rate   = params["discharge_c_rate"],
-                    ppa_capacity_mw    = params["ppa_capacity_mw"],
-                    dispatch_priority  = params["dispatch_priority"],
-                    bess_charge_source = params["bess_charge_source"],
-                    loss_factor        = self._loss_factor,
-                    bess_soh_factor    = soh_post,
-                )
-                solar_arr[year_idx]   = float(np.sum(yr_post["solar_direct_pre"]))
-                wind_arr[year_idx]    = float(np.sum(yr_post["wind_direct_pre"]))
-                battery_arr[year_idx] = float(np.sum(yr_post["discharge_pre"]))
-                pre_arr[year_idx]     = solar_arr[year_idx] + wind_arr[year_idx] + battery_arr[year_idx]
-                meter_arr[year_idx]   = pre_arr[year_idx] * self._loss_factor
-                # Update CUF entry for this year to the post-event value
-                cuf_series[-1] = post_event_cuf
-
-            elif fast_mode:
-                # fast_mode energy approximation (no event year)
-                # Scale Year-1 totals by degradation factor ratios
-                solar_arr[year_idx]   = float(np.sum(anchor_y1_sim["solar_direct_pre"])) * solar_eff / self._solar_eff.get(1, 1.0)
-                wind_arr[year_idx]    = float(np.sum(anchor_y1_sim["wind_direct_pre"]))  * wind_eff  / self._wind_eff.get(1, 1.0)
-                battery_arr[year_idx] = float(np.sum(anchor_y1_sim["discharge_pre"]))    * blended_soh / self._soh_curve.get(1, 1.0)
-                pre_arr[year_idx]     = solar_arr[year_idx] + wind_arr[year_idx] + battery_arr[year_idx]
-                meter_arr[year_idx]   = pre_arr[year_idx] * self._loss_factor
+                    # Re-anchor fast_mode state to this post-event year
+                    n_post, soh_post = registry.to_plant_params(year, container_size,
+                                                                self._soh_curve)
+                    anchor_year           = year
+                    anchor_solar_busbar   = solar_arr[year_idx]
+                    anchor_wind_busbar    = wind_arr[year_idx]
+                    anchor_battery_busbar = battery_arr[year_idx]
+                    anchor_solar_eff      = solar_eff
+                    anchor_wind_eff       = wind_eff
+                    anchor_soh            = soh_post
 
         energy_projection = {
             "solar_direct_mwh":     solar_arr,
@@ -332,7 +395,7 @@ class LifecycleSimulator:
             "delivered_meter_mwh":  meter_arr,
         }
 
-        cohort_snap     = registry.snapshot()
+        cohort_snap = registry.snapshot()
         capacity_timeline = registry.cohort_capacity_timeline(
             project_life, container_size, self._soh_curve
         )
@@ -343,6 +406,7 @@ class LifecycleSimulator:
             opex_augmentation_om     = opex_om,
             event_log                = event_log,
             cuf_series               = cuf_series,
+            adjusted_target_series   = adjusted_target_series,
             cohort_snapshot          = cohort_snap,
             cohort_capacity_timeline = capacity_timeline,
         )
@@ -356,34 +420,39 @@ class LifecycleSimulator:
         params:                  dict[str, Any],
         event_year:              int,
         registry:                CohortRegistry,
-        trigger_threshold_cuf:   float,
-        restoration_target_cuf:  float,
         solar_eff:               float,
         wind_eff:                float,
-    ) -> tuple[int, float]:
+        adjusted_target_cuf:     float,
+        hard_threshold_cuf:      float,
+        ppa_mw:                  float,
+    ) -> tuple[int, float, dict | None]:
         """
         Search for the best number of containers to add at an event.
 
-        Strategy (§3.7 of the implementation brief):
+        Strategy:
           1. Try k = min_k first.
-          2. If post-event CUF >= restoration_target_cuf: this k satisfies the
-             hard constraint.  Continue trying larger k in case economics improve.
-          3. Larger k is accepted while the post-event CUF improves (greedy
-             stopping: first k where improvement stops or k >= max_k).
-          4. If no k restores CUF to target: warn and use largest k tried.
+          2. Accept larger k while the post-event CUF keeps improving
+             (greedy stopping: stop on first non-improving k).
+          3. After the search:
+             • If best post_cuf < adjusted_target → warn: failed to restore
+               even what was achievable (indicates a real problem).
+             • If best post_cuf < hard_threshold → warn: augmentation has
+               kept BESS healthy but combined solar/wind degradation has
+               dragged CUF below the hard floor anyway (structurally
+               unavoidable — flag for visibility).
 
         Returns
         -------
-        (best_k, post_event_cuf_with_best_k)
+        (best_k, post_event_cuf_with_best_k, post_event_sim_dict)
         """
         container_size = self._container_size
         best_k         = self._min_k
         best_post_cuf  = 0.0
-        cuf_satisfied  = False
+        best_sim       = None
         prev_post_cuf  = -1.0
 
         for k in range(self._min_k, self._max_k + 1):
-            # Temporarily compute post-event params without mutating registry
+            # Trial registry — a copy with the new cohort appended
             trial_registry = CohortRegistry(registry.cohorts[0].containers)
             for cohort in registry.cohorts[1:]:
                 trial_registry.add(cohort.install_year, cohort.containers)
@@ -393,38 +462,62 @@ class LifecycleSimulator:
                 event_year, container_size, self._soh_curve
             )
 
-            post_cuf = compute_plant_cuf(self._plant, params, n_trial, soh_trial)
+            # Simulate the full dispatch for this trial k
+            sim = self._plant.simulate(
+                solar_capacity_mw  = params["solar_capacity_mw"] * solar_eff,
+                wind_capacity_mw   = params["wind_capacity_mw"]  * wind_eff,
+                bess_containers    = n_trial,
+                charge_c_rate      = params["charge_c_rate"],
+                discharge_c_rate   = params["discharge_c_rate"],
+                ppa_capacity_mw    = params["ppa_capacity_mw"],
+                dispatch_priority  = params["dispatch_priority"],
+                bess_charge_source = params["bess_charge_source"],
+                loss_factor        = self._loss_factor,
+                bess_soh_factor    = soh_trial,
+            )
+            busbar = (float(np.sum(sim["solar_direct_pre"]))
+                      + float(np.sum(sim["wind_direct_pre"]))
+                      + float(np.sum(sim["discharge_pre"])))
+            post_cuf = compute_plant_cuf(busbar, ppa_mw)
 
             if k == self._min_k:
                 best_k        = k
                 best_post_cuf = post_cuf
-                cuf_satisfied = post_cuf >= restoration_target_cuf
+                best_sim      = sim
                 prev_post_cuf = post_cuf
                 continue
 
-            # Accept larger k if CUF is still improving
             if post_cuf > prev_post_cuf:
                 best_k        = k
                 best_post_cuf = post_cuf
+                best_sim      = sim
                 prev_post_cuf = post_cuf
-                if post_cuf >= restoration_target_cuf:
-                    cuf_satisfied = True
                 if k == self._max_k:
                     break
                 continue
             else:
-                # CUF stopped improving — check if we've already satisfied target
-                if best_post_cuf >= restoration_target_cuf:
-                    break  # good: stop with current best_k
-                # Not satisfied yet but CUF regressed — keep best_k so far, stop
+                # CUF stopped improving — lock in best_k so far
                 break
 
-        if k == self._max_k and best_post_cuf < restoration_target_cuf:
+        # ── Warnings ─────────────────────────────────────────────────────
+        if best_post_cuf < adjusted_target_cuf - 1e-6:
             warnings.warn(
-                f"Augmentation Year {event_year}: max_k={self._max_k} containers tried "
-                f"but post-event CUF {best_post_cuf:.2f}% < target {restoration_target_cuf:.2f}%. "
-                "Using best k found. Check inputs for pathological configuration.",
+                f"Augmentation Year {event_year}: best k={best_k} reached "
+                f"post-event CUF {best_post_cuf:.4f}% but adjusted target "
+                f"is {adjusted_target_cuf:.4f}%. Augmentation failed to "
+                f"restore even the achievable CUF — check config / "
+                f"max_augmentation_containers_per_event.",
                 stacklevel=4,
             )
+        elif best_post_cuf < hard_threshold_cuf - 1e-6:
+            # Reached adjusted target but still below hard threshold — this
+            # is structural (solar/wind degradation), not fixable by aug.
+            logger.info(
+                "Augmentation Year %d: post-event CUF %.4f%% is below "
+                "hard threshold %.4f%% but meets adjusted target "
+                "%.4f%% (solar/wind degradation, not a BESS issue).",
+                event_year, best_post_cuf, hard_threshold_cuf,
+                adjusted_target_cuf,
+            )
 
-        return best_k, best_post_cuf
+        return best_k, best_post_cuf, best_sim

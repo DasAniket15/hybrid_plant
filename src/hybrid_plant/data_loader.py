@@ -22,6 +22,57 @@ from hybrid_plant.constants import HOURS_PER_YEAR, MWH_TO_KWH
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Degradation curve convention
+# ─────────────────────────────────────────────────────────────────────────────
+
+def operating_value(curve: dict[int, float], age_or_year: int) -> float:
+    """
+    Return the 'operating' efficiency/SOH value for a given project year or
+    cohort age, using the **end-of-year** curve convention.
+
+    Convention
+    ──────────
+    The input curve contains **end-of-year** values: ``curve[N]`` is the
+    residual efficiency/SOH at the *end* of year N, i.e. after N years of
+    degradation have accumulated.
+
+    The **operating** value DURING a year is the start-of-year value:
+      • Year 1 (or age 1) → 1.0  (fresh, no degradation has occurred yet)
+      • Year N (N ≥ 2)    → ``curve[N - 1]``  (= end of prior year)
+      • Beyond curve end  → clamped at ``curve[max(curve)]``
+
+    This applies identically to BESS SOH, solar efficiency, and wind
+    efficiency curves (all three use the same convention in their CSVs).
+    For cohorts, pass the cohort's ``age`` in place of ``year``.
+
+    Parameters
+    ----------
+    curve       : dict mapping year/age (int, 1-indexed) → fraction [0–1].
+    age_or_year : 1-indexed project year or cohort age.
+
+    Returns
+    -------
+    float — operating value for that year/age.
+
+    Examples
+    --------
+    >>> soh = {1: 0.9953, 2: 0.9452, 3: 0.921, ..., 25: 0.6454}
+    >>> operating_value(soh, 1)   # Year 1 = fresh
+    1.0
+    >>> operating_value(soh, 2)   # Year 2 = end of Y1 = 0.9953
+    0.9953
+    >>> operating_value(soh, 26)  # Beyond curve, clamp at last entry
+    0.6454
+    """
+    if age_or_year <= 1:
+        return 1.0
+    lookup = age_or_year - 1
+    if lookup in curve:
+        return curve[lookup]
+    return curve[max(curve)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

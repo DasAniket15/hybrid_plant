@@ -20,8 +20,11 @@ from hybrid_plant.solver.solver_engine import SolverEngine, SolverResult
 
 @pytest.fixture(scope="module")
 def solver_result(config, data, energy_engine, finance_engine):
+    # 200 trials is enough for TPE to find feasible regions reliably in this
+    # 6-dim search space. 50 trials was too few — TPE's early exploration can
+    # fail to land in positive-NPV territory with fixed seed=42.
     solver = SolverEngine(config, data, energy_engine, finance_engine)
-    return solver.run(n_trials=50, show_progress=False)
+    return solver.run(n_trials=200, show_progress=False)
 
 
 @pytest.mark.slow

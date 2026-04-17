@@ -181,7 +181,7 @@ class TestAugmentationRestoresCUF:
         cuf_y1 = _compute_y1_cuf(base_resources, STANDARD_PARAMS)
 
         # Set a threshold that will be breached in mid-life
-        threshold = cuf_y1 * 0.93   # fires once SOH drops ~7 %
+        threshold = cuf_y1 * 0.93   # fires once BESS SOH drops ~7 %
 
         result = sim.simulate(
             params                  = STANDARD_PARAMS,
@@ -191,10 +191,13 @@ class TestAugmentationRestoresCUF:
             fast_mode               = True,
         )
 
+        # New semantics: post-event CUF must meet the ADJUSTED target
+        # (Y1 CUF × solar/wind operating-value deg factor).  Late-year
+        # events cannot reach raw Y1 CUF because solar/wind have aged.
         for ev in result.event_log:
-            assert ev["post_event_cuf"] >= cuf_y1 - 0.01, (
+            assert ev["post_event_cuf"] >= ev["adjusted_target"] - 0.01, (
                 f"Year {ev['year']}: post_event_cuf {ev['post_event_cuf']:.3f}% "
-                f"< target {cuf_y1:.3f}%"
+                f"< adjusted target {ev['adjusted_target']:.3f}%"
             )
 
     def test_event_log_fields_present(self, base_resources):
@@ -211,7 +214,7 @@ class TestAugmentationRestoresCUF:
             fast_mode               = True,
         )
 
-        required_keys = {"year", "trigger_cuf", "target_cuf", "post_event_cuf",
+        required_keys = {"year", "trigger_cuf", "adjusted_target", "post_event_cuf",
                          "k_containers", "lump_cost_rs"}
 
         for ev in result.event_log:
@@ -288,9 +291,11 @@ class TestMultipleAugmentations:
 
     def test_triggers_multiple_events(self, base_resources):
         sim = make_simulator(base_resources)
+        # Force small events so a single event can't "oversize" and suppress
+        # all future triggers. With max_k=3 the blended SOH will drift back
+        # below the 0.98 threshold within a few years, causing multiple events.
+        sim._max_k = 3
         cuf_y1 = _compute_y1_cuf(base_resources, self.TIGHT_PARAMS)
-
-        # Threshold at 98 % of Y1 — fires very quickly as SOH degrades
         threshold = cuf_y1 * 0.98
 
         result = sim.simulate(
@@ -308,6 +313,7 @@ class TestMultipleAugmentations:
     def test_cohort_count_matches_events(self, base_resources):
         """Registry should have 1 + n_events cohorts."""
         sim = make_simulator(base_resources)
+        sim._max_k = 3  # same small-event setup as above
         cuf_y1 = _compute_y1_cuf(base_resources, self.TIGHT_PARAMS)
         threshold = cuf_y1 * 0.98
 
@@ -377,8 +383,10 @@ class TestCohortIndependence:
     """
 
     def test_single_cohort_capacity_formula(self, base_resources):
-        """Initial cohort effective capacity must match formula exactly."""
+        """Initial cohort effective capacity must match formula exactly,
+        using the end-of-year operating-value convention (age 1 → 1.0)."""
         from hybrid_plant.augmentation.cohort import BESSCohort
+        from hybrid_plant.data_loader import operating_value
 
         config = base_resources["config"]
         soh    = base_resources["soh"]
@@ -388,7 +396,7 @@ class TestCohortIndependence:
 
         for yr in [1, 5, 10, 20, 25]:
             age      = yr - 1 + 1  # age = yr for initial cohort
-            expected = 10 * csize * soh.get(age, soh[max(soh)])
+            expected = 10 * csize * operating_value(soh, age)
             actual   = cohort.effective_capacity_mwh(yr, csize, soh)
             assert math.isclose(actual, expected, rel_tol=1e-12), (
                 f"Year {yr}: expected {expected:.4f}, got {actual:.4f}"
@@ -397,6 +405,7 @@ class TestCohortIndependence:
     def test_two_cohorts_independent_aging(self, base_resources):
         """Two cohorts installed at different years age independently."""
         from hybrid_plant.augmentation.cohort import CohortRegistry
+        from hybrid_plant.data_loader import operating_value
 
         config = base_resources["config"]
         soh    = base_resources["soh"]
@@ -406,10 +415,11 @@ class TestCohortIndependence:
         reg.add(install_year=8, containers=4)   # augmentation event at year 8
 
         # Year 10: initial cohort age = 10, aug cohort age = 3
+        # Operating values apply the end-of-year convention.
         yr = 10
         total_expected = (
-            10 * csize * soh[10]   # initial cohort, age 10
-            + 4  * csize * soh[3]  # aug cohort,     age 3
+            10 * csize * operating_value(soh, 10)   # initial cohort, age 10
+            + 4  * csize * operating_value(soh, 3)  # aug cohort,     age 3
         )
         total_actual = reg.effective_capacity_mwh(yr, csize, soh)
         assert math.isclose(total_actual, total_expected, rel_tol=1e-12), (
@@ -468,10 +478,16 @@ class TestCohortIndependence:
         for idx, vals in timeline.items():
             assert len(vals) == life, f"Cohort {idx} should have {life} values"
 
-    def test_initial_soh_is_from_curve_not_100_pct(self, base_resources):
+    def test_fresh_cohort_is_at_100_pct_soh(self, base_resources):
         """
-        Fresh cohorts must use soh_curve[age=1] (≈0.9953), NOT 1.0.
-        This is the key bug from prior implementations.
+        Fresh cohorts must operate at SOH = 1.0 in their install year,
+        using the end-of-year degradation convention: curve[N] is the SOH
+        at the END of year N, so during year 1 (the install year) the cohort
+        has experienced zero degradation.
+
+        This test validates the post-2025 convention.  Prior to that, the
+        code incorrectly used soh_curve[1] (~0.9953) for Year-1 operation,
+        which caused a ~0.5% under-reporting of fresh-plant capacity.
         """
         from hybrid_plant.augmentation.cohort import BESSCohort
 
@@ -482,14 +498,21 @@ class TestCohortIndependence:
         cohort = BESSCohort(install_year=1, containers=1)
         cap_y1 = cohort.effective_capacity_mwh(1, csize, soh)
 
-        expected_from_curve = 1 * csize * soh[1]
-        soh_100_pct_cap     = 1 * csize * 1.0
-
-        assert math.isclose(cap_y1, expected_from_curve, rel_tol=1e-12)
-        assert cap_y1 < soh_100_pct_cap, (
-            f"Y1 capacity ({cap_y1:.4f}) should be < nameplate ({soh_100_pct_cap:.4f}); "
-            f"SOH[1]={soh[1]} must be applied, not 1.0"
+        # Year 1 operating value for a fresh cohort is 1.0 → full nameplate
+        expected_nameplate = 1 * csize * 1.0
+        assert math.isclose(cap_y1, expected_nameplate, rel_tol=1e-12), (
+            f"Y1 fresh cohort capacity should be nameplate ({expected_nameplate:.4f}), "
+            f"got {cap_y1:.4f}"
         )
+
+        # Year 2 should show the first year's end-of-year degradation
+        cap_y2 = cohort.effective_capacity_mwh(2, csize, soh)
+        expected_y2 = 1 * csize * soh[1]   # end of Y1 = soh_curve[1]
+        assert math.isclose(cap_y2, expected_y2, rel_tol=1e-12), (
+            f"Y2 capacity should reflect 1 year of degradation "
+            f"({expected_y2:.4f}), got {cap_y2:.4f}"
+        )
+        assert cap_y2 < cap_y1, "Y2 capacity must be < Y1 (degradation has occurred)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -657,10 +680,11 @@ class TestAugmentationEngineIntegration:
         engine = base_resources["engine"]
         soh    = base_resources["soh"]
 
+        _y1 = engine.evaluate(**STANDARD_PARAMS)
+        from hybrid_plant.augmentation.cuf_evaluator import year1_busbar_mwh
         cuf_y1 = compute_plant_cuf(
-            engine.plant, STANDARD_PARAMS,
-            bess_containers = STANDARD_PARAMS["bess_containers"],
-            bess_soh_factor = soh[1],
+            year1_busbar_mwh(_y1),
+            STANDARD_PARAMS["ppa_capacity_mw"],
         )
         aug_engine = AugmentationEngine(
             config, data, engine, soh, trigger_threshold_cuf=cuf_y1 * 0.93
@@ -687,9 +711,11 @@ class TestAugmentationEngineIntegration:
         engine = base_resources["engine"]
         soh    = base_resources["soh"]
 
+        _y1 = engine.evaluate(**STANDARD_PARAMS)
+        from hybrid_plant.augmentation.cuf_evaluator import year1_busbar_mwh
         cuf_y1 = compute_plant_cuf(
-            engine.plant, STANDARD_PARAMS,
-            STANDARD_PARAMS["bess_containers"], soh[1],
+            year1_busbar_mwh(_y1),
+            STANDARD_PARAMS["ppa_capacity_mw"],
         )
         aug_engine = AugmentationEngine(
             config, data, engine, soh, trigger_threshold_cuf=cuf_y1 * 0.93
@@ -719,9 +745,11 @@ class TestAugmentationEngineIntegration:
         engine = base_resources["engine"]
         soh    = base_resources["soh"]
 
+        _y1 = engine.evaluate(**STANDARD_PARAMS)
+        from hybrid_plant.augmentation.cuf_evaluator import year1_busbar_mwh
         cuf_y1 = compute_plant_cuf(
-            engine.plant, STANDARD_PARAMS,
-            STANDARD_PARAMS["bess_containers"], soh[1],
+            year1_busbar_mwh(_y1),
+            STANDARD_PARAMS["ppa_capacity_mw"],
         )
         aug_engine = AugmentationEngine(
             config, data, engine, soh, trigger_threshold_cuf=cuf_y1 * 0.93
@@ -790,13 +818,12 @@ class TestAugmentationEngineIntegration:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _compute_y1_cuf(resources: dict, params: dict) -> float:
-    """Compute Year-1 Plant CUF for the given params using canonical formula."""
-    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
+    """Compute Year-1 Plant CUF for the given params using the naive formula."""
+    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
 
     engine = resources["engine"]
-    soh    = resources["soh"]
+    y1 = engine.evaluate(**params)
     return compute_plant_cuf(
-        engine.plant, params,
-        bess_containers = params["bess_containers"],
-        bess_soh_factor = soh[1],
+        year1_busbar_mwh(y1),
+        params["ppa_capacity_mw"],
     )

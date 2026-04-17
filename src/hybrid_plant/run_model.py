@@ -131,6 +131,12 @@ def print_section3(params, y1, fi, data, energy_engine):
     curtailment      = float(np.sum(y1["curtailment_pre"]))
     total_busbar     = solar_direct_pre + wind_direct_pre + discharge_pre
 
+    charge_pre       = float(np.sum(y1["charge_pre"]))
+    charge_loss      = float(np.sum(y1["charge_loss"]))
+    discharge_loss   = float(np.sum(y1["discharge_loss"]))
+    aux_loss         = float(np.sum(y1["aux_loss"]))
+    end_soc          = float(y1.get("bess_end_soc_mwh", 0.0))
+
     solar_direct_m  = float(np.sum(y1["solar_direct_meter"]))
     wind_direct_m   = float(np.sum(y1["wind_direct_meter"]))
     discharge_m     = float(np.sum(y1["discharge_meter"]))
@@ -145,33 +151,40 @@ def print_section3(params, y1, fi, data, energy_engine):
     raw_solar = float(np.sum(params["solar_capacity_mw"] * data["solar_cuf"]))
     raw_wind  = float(np.sum(params["wind_capacity_mw"]  * data["wind_cuf"]))
 
-    # Plant CUF — use canonical formula from cuf_evaluator (single source of truth)
-    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _compute_plant_cuf
-    from hybrid_plant.data_loader import load_soh_curve
-    _soh_curve = load_soh_curve(energy_engine.config if hasattr(energy_engine, "config") else None)
-    _soh_y1    = _soh_curve.get(1, 1.0) if _soh_curve else 1.0
-    plant_cuf_val = _compute_plant_cuf(
-        energy_engine.plant, params,
-        bess_containers = params["bess_containers"],
-        bess_soh_factor = _soh_y1,
-    )
+    # Plant CUF — transparent "naive" formula, the single source of truth.
+    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _plant_cuf
+    plant_cuf_val = _plant_cuf(total_busbar, params["ppa_capacity_mw"])
 
     solar_cuf   = compute_cuf(raw_solar, params["solar_capacity_mw"])
     wind_cuf    = compute_cuf(raw_wind,  params["wind_capacity_mw"])
     loss_factor = float(y1["loss_factor"])
+    ppa         = params["ppa_capacity_mw"]
 
+    # PPA envelope and utilisation
+    ppa_envelope_mwh = ppa * 8760
+
+    print(f"\n  {'── GENERATION (Raw, Pre-Dispatch)'}")
+    print(f"  {'Raw Solar Generation (MWh)':<38} : {round(raw_solar, 1)}")
+    print(f"  {'Raw Wind Generation (MWh)':<38} : {round(raw_wind, 1)}")
+    print(f"  {'Raw Total Generation (MWh)':<38} : {round(raw_solar + raw_wind, 1)}")
     print(f"\n  {'── BUSBAR (Pre-Loss)'}")
     print(f"  {'Solar Direct (MWh)':<38} : {round(solar_direct_pre, 1)}")
     print(f"  {'Wind Direct (MWh)':<38} : {round(wind_direct_pre, 1)}")
     print(f"  {'BESS Discharge (MWh)':<38} : {round(discharge_pre, 1)}")
     print(f"  {'Total Busbar Delivery (MWh)':<38} : {round(total_busbar, 1)}")
-    print(f"  {'Excess Energy (MWh)':<38} : {round(curtailment, 1)}")
+    print(f"  {'Excess Energy / Curtailment (MWh)':<38} : {round(curtailment, 1)}")
+    print(f"\n  {'── BESS FLOWS (Pre-Loss)'}")
+    print(f"  {'BESS Charging (MWh)':<38} : {round(charge_pre, 1)}")
+    print(f"  {'Charge Loss (ηc=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.charge_eff):<38} : {round(charge_loss, 1)}")
+    print(f"  {'Discharge Loss (ηd=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.discharge_eff):<38} : {round(discharge_loss, 1)}")
+    print(f"  {'Aux Consumption (MWh)':<38} : {round(aux_loss, 1)}")
+    print(f"  {'End-of-Year SOC (MWh)':<38} : {round(end_soc, 1)}")
     print(f"\n  {'── METER (Post-Loss)'}")
+    print(f"  {'Grid Loss Factor':<38} : {round(loss_factor, 4)}")
     print(f"  {'Solar Direct at Meter (MWh)':<38} : {round(solar_direct_m, 1)}")
     print(f"  {'Wind Direct at Meter (MWh)':<38} : {round(wind_direct_m, 1)}")
     print(f"  {'BESS Discharge at Meter (MWh)':<38} : {round(discharge_m, 1)}")
     print(f"  {'Total RE at Meter (MWh)':<38} : {round(total_meter, 1)}")
-    print(f"  {'Grid Loss Factor':<38} : {round(loss_factor, 4)}")
     print(f"\n  {'── LOAD & DISCOM DEPENDENCY'}")
     print(f"  {'Annual Load (MWh)':<38} : {round(annual_load_mwh, 1)}")
     print(f"  {'DISCOM Draw (MWh)':<38} : {round(discom_draw_mwh, 1)}")
@@ -180,7 +193,8 @@ def print_section3(params, y1, fi, data, energy_engine):
     print(f"\n  {'── CAPACITY UTILISATION (CUF)'}")
     print(f"  {'Solar CUF (%)':<38} : {round(solar_cuf, 2) if solar_cuf else 'N/A'}")
     print(f"  {'Wind CUF (%)':<38} : {round(wind_cuf, 2) if wind_cuf else 'N/A'}")
-    print(f"  {'Plant CUF (%) [busbar / PPA×8760]':<38} : {round(plant_cuf_val, 2)}")
+    print(f"  {'PPA Envelope (MWh = PPA×8760)':<38} : {round(ppa_envelope_mwh, 1)}")
+    print(f"  {'Plant CUF (%) = busbar / PPA×8760':<38} : {round(plant_cuf_val, 2)}")
 
 
 def print_section4(fi):
@@ -195,13 +209,19 @@ def print_section4(fi):
     elec_tax = lt.get("electricity_tax_per_kwh", 0.0)
     banking  = lt.get("banking_per_kwh", 0.0)
 
-    cap_series = lt.get("capacity_charge_per_kwh_series", None)
+    # True capacity charge per meter kWh (now exposed explicitly by LandedTariffModel)
+    cap_series    = lt.get("capacity_charge_per_kwh_series", None)
+    markup_series = lt.get("lcoe_markup_per_kwh_series", None)
+
     if cap_series is not None:
-        cap_y1, cap_y25 = cap_series[0], cap_series[-1]
+        cap_y1, cap_y25       = cap_series[0], cap_series[-1]
     else:
-        energy_charge = wheeling + elec_tax + banking
-        cap_y1  = lts[0]  - lcoe - energy_charge
-        cap_y25 = lts[-1] - lcoe - energy_charge
+        cap_y1 = cap_y25 = 0.0
+
+    if markup_series is not None:
+        markup_y1, markup_y25 = markup_series[0], markup_series[-1]
+    else:
+        markup_y1 = markup_y25 = 0.0
 
     print(f"\n  {'── LCOE BUILD-UP (NPV basis)'}")
     print(f"  {'NPV Total Cost (Rs Crore)':<38} : {cr(lcd['npv_total_cost'])}")
@@ -211,17 +231,19 @@ def print_section4(fi):
     print(f"    {'↳ OPEX':<36} : {cr(lcd['npv_opex'])}")
     print(f"  {'NPV Busbar Energy (Bn kWh)':<38} : {round(lcd['npv_energy_kwh'] / 1e9, 4)}")
     print(f"  {'LCOE (Rs/kWh)':<38} : {round(lcoe, 4)}")
-    print(f"\n  {'── LANDED TARIFF BUILD-UP (Year 1)'}")
-    print(f"  {'LCOE (busbar)':<38} : {round(lcoe, 4)}")
-    print(f"  {'Wheeling charge (Rs/kWh)':<38} : {round(wheeling, 4)}")
-    print(f"  {'Electricity tax (Rs/kWh)':<38} : {round(elec_tax, 4)}")
-    print(f"  {'Banking charge (Rs/kWh)':<38} : {round(banking, 4)}")
-    print(f"  {'Capacity charge Y1 (Rs/kWh)':<38} : {round(cap_y1, 4)}")
-    print(f"  {'Capacity charge Y25 (Rs/kWh)':<38} : {round(cap_y25, 4)}")
-    print(f"  {'Landed Tariff Year 1 (Rs/kWh)':<38} : {round(lts[0], 4)}")
-    print(f"  {'Landed Tariff Year 25 (Rs/kWh)':<38} : {round(lts[-1], 4)}")
-    print(f"  {'DISCOM Tariff wt-avg (Rs/kWh)':<38} : {round(sv['discom_tariff'], 4)}")
+
+    print(f"\n  {'── LANDED TARIFF BUILD-UP (per meter kWh)'}")
+    print(f"  {'Component':<38}    {'Year 1':>9}    {'Year 25':>9}")
+    print(f"  {'LCOE (busbar basis)':<38} : {round(lcoe, 4):>9}    {round(lcoe, 4):>9}")
+    print(f"  {'+ Busbar→Meter LCOE markup':<38} : {round(markup_y1, 4):>9}    {round(markup_y25, 4):>9}")
+    print(f"  {'+ Wheeling charge':<38} : {round(wheeling, 4):>9}    {round(wheeling, 4):>9}")
+    print(f"  {'+ Electricity tax':<38} : {round(elec_tax, 4):>9}    {round(elec_tax, 4):>9}")
+    print(f"  {'+ Banking charge':<38} : {round(banking, 4):>9}    {round(banking, 4):>9}")
+    print(f"  {'+ Capacity charge (CTU+STU+SLDC)':<38} : {round(cap_y1, 4):>9}    {round(cap_y25, 4):>9}")
+    print(f"  {'= Landed Tariff (Rs/kWh)':<38} : {round(lts[0], 4):>9}    {round(lts[-1], 4):>9}")
+    print(f"\n  {'DISCOM Tariff wt-avg (Rs/kWh)':<38} : {round(sv['discom_tariff'], 4)}")
     print(f"  {'Saving vs DISCOM Y1 (Rs/kWh)':<38} : {round(sv['discom_tariff'] - lts[0], 4)}")
+    print(f"  {'Saving vs DISCOM Y25 (Rs/kWh)':<38} : {round(sv['discom_tariff'] - lts[-1], 4)}")
 
 
 def print_section5(fi):
@@ -267,32 +289,112 @@ def print_section6(fi):
     print(f"  {'Total OPEX':<36}  {cr(ob_y1['total']):>10}  {cr(ob_y25['total']):>10}  {round(cr(ob_y25['total'])-cr(ob_y1['total']),4):>+10}")
 
 
-def print_section7(fi):
-    sep("SECTION 7 — 25-YEAR PROJECTIONS")
-    ep            = fi["energy_projection"]
-    sv            = fi["savings_breakdown"]
-    lts           = fi["landed_tariff_series"]
-    annual_savings = sv["annual_savings"]
-    cumulative    = 0.0
+def print_section7(fi, data, params, aug_data=None):
+    sep("SECTION 7a — PER-YEAR ENERGY FLOWS (MWh, busbar)")
+    ep  = fi["energy_projection"]
 
-    hdr = (
-        f"  {'Yr':>3}  {'Busbar MWh':>11}  {'Meter MWh':>10}  "
-        f"{'OPEX (Cr)':>10}  {'Landed ₹/kWh':>13}  "
-        f"{'Savings (Cr)':>13}  {'Cum Savings (Cr)':>17}"
-    )
-    print(f"\n{hdr}")
+    # Per-year operating values (for the reference columns)
+    from hybrid_plant.data_loader import operating_value, load_soh_curve
+    from pathlib import Path
+    root = find_project_root()
+    import pandas as pd
+    solar_eff_df = pd.read_csv(root / "data/solar_efficiency_curve.csv")
+    wind_eff_df  = pd.read_csv(root / "data/wind_efficiency_curve.csv")
+    solar_eff_curve = dict(zip(solar_eff_df["year"].astype(int), solar_eff_df["efficiency"]))
+    wind_eff_curve  = dict(zip(wind_eff_df["year"].astype(int),  wind_eff_df["efficiency"]))
+    # BESS blended SOH comes from cohorts; reconstruct via ratios if aug_data present
+    soh_curve = load_soh_curve(None) if aug_data is not None else None
+
+    # Reconstruct cohort containers per year
+    container_counts = []
+    init_c = params["bess_containers"]
+    events = aug_data["event_log"] if aug_data else []
+    cum = init_c
+    for y in range(1, 26):
+        for ev in events:
+            if ev["year"] == y:
+                cum += ev["k_containers"]
+        container_counts.append(cum)
+
+    print(f"\n  {'Yr':>3}  {'Cont':>5}  {'Solar Eff':>9}  {'Wind Eff':>9}  "
+          f"{'Solar MWh':>11}  {'Wind MWh':>11}  {'BESS MWh':>11}  {'Busbar MWh':>11}  {'Meter MWh':>10}  {'Loss MWh':>10}")
     sep()
     for y in range(25):
-        cumulative += annual_savings[y]
-        print(
-            f"  {y+1:>3}  "
-            f"{ep['delivered_pre_mwh'][y]:>11.1f}  "
-            f"{ep['delivered_meter_mwh'][y]:>10.1f}  "
-            f"{fi['opex_projection'][y]/CRORE_TO_RS:>10.4f}  "
-            f"{lts[y]:>13.4f}  "
-            f"{annual_savings[y]/CRORE_TO_RS:>13.4f}  "
-            f"{cumulative/CRORE_TO_RS:>17.4f}"
-        )
+        yr = y + 1
+        s_eff = operating_value(solar_eff_curve, yr)
+        w_eff = operating_value(wind_eff_curve,  yr)
+        busbar = ep["delivered_pre_mwh"][y]
+        meter  = ep["delivered_meter_mwh"][y]
+        loss   = busbar - meter
+        print(f"  {yr:>3}  {container_counts[y]:>5}  {s_eff:>9.4f}  {w_eff:>9.4f}  "
+              f"{ep['solar_direct_mwh'][y]:>11.1f}  {ep['wind_direct_mwh'][y]:>11.1f}  "
+              f"{ep['battery_mwh'][y]:>11.1f}  {busbar:>11.1f}  {meter:>10.1f}  {loss:>10.1f}")
+    sep()
+
+    # ─────────────────────────────────────────────────────────────────────
+    sep("SECTION 7b — PER-YEAR LOAD, DISCOM, CUF")
+    annual_load = float(np.sum(data["load_profile"]))
+    ppa_env     = params["ppa_capacity_mw"] * 8760
+    cuf_series  = aug_data.get("cuf_series", None) if aug_data else None
+    adj_targets = aug_data.get("adjusted_target_series", None) if aug_data else None
+
+    raw_solar_annual = float(np.sum(params["solar_capacity_mw"] * data["solar_cuf"]))
+    raw_wind_annual  = float(np.sum(params["wind_capacity_mw"]  * data["wind_cuf"]))
+
+    print(f"\n  Annual Load (MWh)          : {annual_load:.1f}")
+    print(f"  PPA Envelope (MWh)         : {ppa_env:.1f}")
+    print(f"  Raw Solar @ nameplate Y1   : {raw_solar_annual:.1f}")
+    print(f"  Raw Wind  @ nameplate Y1   : {raw_wind_annual:.1f}")
+
+    print(f"\n  {'Yr':>3}  {'Meter MWh':>10}  {'DISCOM MWh':>10}  {'RE Pen%':>7}  "
+          f"{'Solar CUF%':>10}  {'Plant CUF%':>10}  {'Adj Tgt%':>9}  {'PPA Util%':>9}")
+    sep()
+    for y in range(25):
+        yr = y + 1
+        meter  = ep["delivered_meter_mwh"][y]
+        busbar = ep["delivered_pre_mwh"][y]
+        discom = max(annual_load - meter, 0)
+        re_pen = meter / annual_load * 100 if annual_load else 0
+        # Solar CUF per year = raw_solar × solar_eff / (solar_mw × 8760) → that's eff × baseline Solar CUF
+        baseline_solar_cuf = raw_solar_annual / (params["solar_capacity_mw"] * 8760) * 100 if params["solar_capacity_mw"] else 0
+        s_eff  = operating_value(solar_eff_curve, yr)
+        solar_cuf_y = baseline_solar_cuf * s_eff
+        plant_cuf   = cuf_series[y] if cuf_series else busbar / ppa_env * 100
+        adj_tgt     = adj_targets[y] if adj_targets else plant_cuf
+        ppa_util    = busbar / ppa_env * 100
+        print(f"  {yr:>3}  {meter:>10.1f}  {discom:>10.1f}  {re_pen:>6.2f}%  "
+              f"{solar_cuf_y:>9.2f}%  {plant_cuf:>9.2f}%  {adj_tgt:>8.2f}%  {ppa_util:>8.2f}%")
+    sep()
+
+    # ─────────────────────────────────────────────────────────────────────
+    sep("SECTION 7c — PER-YEAR ECONOMICS (Rs Crore unless noted)")
+    sv   = fi["savings_breakdown"]
+    lts  = fi["landed_tariff_series"]
+    annual_savings = sv["annual_savings"]
+    opex_proj      = fi["opex_projection"]
+    baseline_annual = sv["baseline_annual_cost"]
+
+    # Lump & recurring aug break-out (if available)
+    aug_lump = aug_data["opex_augmentation_lump"] if aug_data else [0.0]*25
+    aug_om   = aug_data["opex_augmentation_om"]   if aug_data else [0.0]*25
+
+    print(f"\n  Baseline annual cost (flat, Rs Cr) : {baseline_annual/CRORE_TO_RS:.4f}")
+
+    print(f"\n  {'Yr':>3}  {'Base OPEX':>9}  {'Aug Lump':>9}  {'Aug O&M':>8}  {'Tot OPEX':>9}  "
+          f"{'Landed':>8}  {'Hybrid':>9}  {'Savings':>9}  {'Cum Sav':>10}")
+    sep()
+    cum = 0
+    for y in range(25):
+        yr = y + 1
+        total_opex    = opex_proj[y]
+        base_opex     = total_opex - aug_lump[y] - aug_om[y]
+        hybrid        = sv["annual_hybrid_cost"][y]
+        savings       = annual_savings[y]
+        cum          += savings
+        print(f"  {yr:>3}  {base_opex/CRORE_TO_RS:>9.4f}  {aug_lump[y]/CRORE_TO_RS:>9.4f}  "
+              f"{aug_om[y]/CRORE_TO_RS:>8.4f}  {total_opex/CRORE_TO_RS:>9.4f}  "
+              f"{lts[y]:>8.4f}  {hybrid/CRORE_TO_RS:>9.4f}  {savings/CRORE_TO_RS:>9.4f}  "
+              f"{cum/CRORE_TO_RS:>10.4f}")
     sep()
 
 def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
@@ -300,19 +402,17 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
     sep("SECTION 6b — AUGMENTATION")
     events     = aug_data["event_log"]
     init_cont  = aug_data["initial_containers"]
-    container_size = float(fi.get("_container_size_mwh", 5.015))  # fallback
+    container_size = float(fi.get("_container_size_mwh", 5.015))
 
-    # Pull container size from augmentation data if available
     total_added = aug_data["total_containers_added"]
     n_events    = aug_data["n_events"]
 
-    # Estimate nameplate MWh from first event's k_containers × cost / cost_per_mwh
-    # Better: recompute from event_log
     lump_total = aug_data["total_lump_cost_rs"]
     om_total   = aug_data["total_om_cost_rs"]
 
-    print(f"\n  {'Trigger threshold CUF (baseline Y1)':<44} : {aug_data['trigger_threshold_cuf']:.2f} %")
-    print(f"  {'Restoration target CUF (this scenario Y1)':<44} : {aug_data['restoration_target_cuf']:.2f} %")
+    print(f"\n  {'Trigger threshold CUF (baseline Y1)':<44} : {aug_data['trigger_threshold_cuf']:.4f} %")
+    print(f"  {'Restoration target CUF (this scenario Y1)':<44} : {aug_data['restoration_target_cuf']:.4f} %")
+    print(f"  Adjusted target = Y1 CUF × weighted operating eff (solar+wind deg factored in)")
     print()
     print(f"  {'Initial BESS containers':<44} : {init_cont}")
     print(f"  {'Augmentation events':<44} : {n_events}")
@@ -322,24 +422,35 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
 
     if events:
         print(f"\n  AUGMENTATION SCHEDULE\n")
-        hdr = (f"  {'Yr':>4}  {'Pre-CUF':>9}  {'Containers':>10}  "
-               f"{'New MWh':>9}  {'Lump (Cr)':>10}  {'Post-CUF':>9}  {'Cum Conts':>10}")
+        hdr = (
+            f"  {'Yr':>4}  {'Pre-CUF':>9}  {'Cont':>5}  {'New MWh':>8}  "
+            f"{'Lump (Cr)':>10}  {'Post-CUF':>9}  {'AdjTgt':>8}  {'HardThr':>8}  "
+            f"{'≥Adj?':>5}  {'≥Hard?':>6}  {'CumCont':>8}"
+        )
         print(hdr)
         sep()
         cum_containers = init_cont
         for ev in events:
             cum_containers += ev["k_containers"]
-            new_mwh = ev["k_containers"] * 5.015  # read from BESS config ideally
+            new_mwh = ev["k_containers"] * container_size
+            reached_adj  = "Y" if ev.get("reached_adjusted", False) else "N"
+            reached_hard = "Y" if ev.get("reached_hard", False) else "N"
             print(
                 f"  {ev['year']:>4}  "
-                f"{ev['trigger_cuf']:>8.2f}%  "
-                f"{ev['k_containers']:>10}  "
-                f"{new_mwh:>9.2f}  "
+                f"{ev['trigger_cuf']:>8.4f}%  "
+                f"{ev['k_containers']:>5}  "
+                f"{new_mwh:>8.2f}  "
                 f"{cr(ev['lump_cost_rs']):>10.2f}  "
-                f"{ev['post_event_cuf']:>8.2f}%  "
-                f"{cum_containers:>10}"
+                f"{ev['post_event_cuf']:>8.4f}%  "
+                f"{ev.get('adjusted_target', float('nan')):>7.4f}%  "
+                f"{ev.get('hard_threshold', float('nan')):>7.4f}%  "
+                f"{reached_adj:>5}  "
+                f"{reached_hard:>6}  "
+                f"{cum_containers:>8}"
             )
         sep()
+        print(f"  ≥Adj?   = post-event CUF ≥ adjusted target (achievable given solar/wind deg)")
+        print(f"  ≥Hard?  = post-event CUF ≥ hard threshold (Y1 baseline CUF)")
     else:
         print("\n  (No augmentation events triggered over 25-year life)")
 
@@ -397,7 +508,7 @@ def plot_augmentation_dashboard(
     """
     Generate a 3-panel augmentation dashboard PNG.
 
-    Panel 1 — Plant CUF curve with trigger / target lines and event markers
+    Panel 1 — Plant CUF curve with trigger / adjusted-target lines and event markers
     Panel 2 — Cohort effective capacity stacked area
     Panel 3 — Annual savings bars + lump-sum event costs + cumulative line
     """
@@ -405,10 +516,11 @@ def plot_augmentation_dashboard(
 
     years      = np.arange(1, 26)
     cuf_series = np.array(aug_data["cuf_series"])
+    adj_targets = np.array(aug_data.get("adjusted_target_series", cuf_series))
     events     = aug_data["event_log"]
     threshold  = aug_data["trigger_threshold_cuf"]
     target     = aug_data["restoration_target_cuf"]
-    timeline   = aug_data["cohort_capacity_timeline"]   # {cohort_idx: [mwh × 25]}
+    timeline   = aug_data["cohort_capacity_timeline"]
     lump_series = np.array(aug_data["opex_augmentation_lump"]) / CRORE_TO_RS
 
     fig, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=True)
@@ -418,16 +530,16 @@ def plot_augmentation_dashboard(
 
     # ── Panel 1: Plant CUF ───────────────────────────────────────────────────
     ax1 = axes[0]
-    ax1.plot(years, cuf_series, color="#1565C0", lw=2.0, label="Scenario CUF", zorder=3)
+    ax1.plot(years, cuf_series, color="#1565C0", lw=2.0, label="Scenario CUF (with aug)", zorder=3)
+    ax1.plot(years, adj_targets, color="#2e7d32", lw=1.5, ls=":",
+             label="Adjusted target (solar+wind deg)", zorder=3)
 
     if baseline_cuf_series is not None:
         ax1.plot(years, baseline_cuf_series, color="#BDBDBD", lw=1.5,
                  ls="--", label="Baseline (no aug)", zorder=2)
 
     ax1.axhline(threshold, color="#e53935", lw=1.5, ls="--",
-                label=f"Trigger threshold  {threshold:.2f}%", zorder=3)
-    ax1.axhline(target,    color="#2e7d32", lw=1.5, ls=":",
-                label=f"Restoration target {target:.2f}%",   zorder=3)
+                label=f"Hard threshold  {threshold:.2f}%", zorder=3)
 
     for ev in events:
         ax1.axvline(ev["year"], color="#FF8F00", lw=1.2, ls="--", alpha=0.8, zorder=2)
@@ -888,27 +1000,32 @@ if __name__ == "__main__":
     baseline_cuf_ser = None
 
     if aug_enabled:
-        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _cuf_fn
-        from hybrid_plant.data_loader import load_soh_curve
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _cuf_fn, year1_busbar_mwh
+        from hybrid_plant.data_loader import load_soh_curve, operating_value
         from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
 
         soh_curve = load_soh_curve(config)
 
+        # Baseline Y1 CUF = busbar / (PPA × 8760). Runs the baseline's Y1
+        # simulation with fresh-plant operating values (all = 1.0) exactly
+        # the same way Year1Engine.evaluate produces them — so we just re-use
+        # the baseline_result's Y1 busbar directly if available, else re-sim.
+        b_y1 = baseline_result.full_result.get("year1")
+        if b_y1 is None:
+            b_y1 = energy_engine.evaluate(**baseline_result.best_params)
         trigger_threshold_cuf = _cuf_fn(
-            energy_engine.plant,
-            baseline_result.best_params,
-            bess_containers = baseline_result.best_params["bess_containers"],
-            bess_soh_factor = soh_curve.get(1, 1.0),
+            year1_busbar_mwh(b_y1),
+            baseline_result.best_params["ppa_capacity_mw"],
         )
-        print(f"  [Aug] Trigger threshold CUF (baseline Y1): {trigger_threshold_cuf:.2f}%")
+        print(f"  [Aug] Trigger threshold CUF (baseline Y1): {trigger_threshold_cuf:.4f}%")
 
         aug_engine = AugmentationEngine(
             config, data, energy_engine, soh_curve, trigger_threshold_cuf
         )
 
-        # Compute baseline no-aug CUF series for comparison panel in plot
-        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
-        import pandas as pd
+        # Compute the NO-AUGMENTATION baseline CUF series — what would happen
+        # to Plant CUF if the baseline best config degraded naturally without
+        # any augmentation.  Used as the grey reference line on the aug plot.
         from pathlib import Path as _Path
 
         def _load_curve_local(cfg_path: str, column: str) -> dict:
@@ -918,25 +1035,35 @@ if __name__ == "__main__":
             df.columns = df.columns.str.strip().str.lower()
             return dict(zip(df["year"].astype(int), df[column.lower()]))
 
-        solar_eff = _load_curve_local(
+        solar_eff_curve = _load_curve_local(
             config.project["generation"]["solar"]["degradation"]["file"], "efficiency"
         )
-        wind_eff = _load_curve_local(
+        wind_eff_curve = _load_curve_local(
             config.project["generation"]["wind"]["degradation"]["file"], "efficiency"
         )
         _base_params = baseline_result.best_params
-        _lf          = energy_engine.grid.loss_factor
-        container_size = config.bess["bess"]["container"]["size_mwh"]
+        _ppa         = _base_params["ppa_capacity_mw"]
         baseline_cuf_ser = []
         for yr in range(1, 26):
-            _n  = _base_params["bess_containers"]
-            _s  = soh_curve.get(yr, 1.0)
-            _se = solar_eff.get(yr, 1.0)
-            _we = wind_eff.get(yr, 1.0)
-            _p  = dict(_base_params)
-            _p["solar_capacity_mw"] = _base_params["solar_capacity_mw"] * _se
-            _p["wind_capacity_mw"]  = _base_params["wind_capacity_mw"]  * _we
-            baseline_cuf_ser.append(_cuf_fn(energy_engine.plant, _p, _n, _s))
+            _s_eff = operating_value(solar_eff_curve, yr)
+            _w_eff = operating_value(wind_eff_curve,  yr)
+            _soh_y = operating_value(soh_curve,       yr)
+            _sim = energy_engine.plant.simulate(
+                solar_capacity_mw  = _base_params["solar_capacity_mw"] * _s_eff,
+                wind_capacity_mw   = _base_params["wind_capacity_mw"]  * _w_eff,
+                bess_containers    = _base_params["bess_containers"],
+                charge_c_rate      = _base_params["charge_c_rate"],
+                discharge_c_rate   = _base_params["discharge_c_rate"],
+                ppa_capacity_mw    = _ppa,
+                dispatch_priority  = _base_params["dispatch_priority"],
+                bess_charge_source = _base_params["bess_charge_source"],
+                loss_factor        = energy_engine.grid.loss_factor,
+                bess_soh_factor    = _soh_y,
+            )
+            _busbar_yr = (float(np.sum(_sim["solar_direct_pre"]))
+                          + float(np.sum(_sim["wind_direct_pre"]))
+                          + float(np.sum(_sim["discharge_pre"])))
+            baseline_cuf_ser.append(_cuf_fn(_busbar_yr, _ppa))
 
     # ── Choose result to display ──────────────────────────────────────────────
     if not aug_enabled:
@@ -976,7 +1103,7 @@ if __name__ == "__main__":
     print_section6(fi)
     if aug_enabled and aug_data is not None:
         print_section6b(aug_data, baseline_result, fi)
-    print_section7(fi)
+    print_section7(fi, data, params, aug_data)
     if aug_enabled and solver_aware and aug_data is not None:
         print_section8_baseline_comparison(baseline_result, fi)
 

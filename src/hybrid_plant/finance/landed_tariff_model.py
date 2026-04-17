@@ -106,6 +106,8 @@ class LandedTariffModel:
         elec_tax_series:   list[float] = []
         banking_series:    list[float] = []
         total_cost_series: list[float] = []
+        capacity_per_kwh_series: list[float] = []
+        lcoe_markup_per_kwh_series: list[float] = []
 
         for busbar_mwh, meter_mwh, banked_kwh in zip(
             busbar_energy_mwh_projection,
@@ -123,12 +125,27 @@ class LandedTariffModel:
             total = re_payment + annual_capacity_rs + wheeling + elec_tax + banking
             landed = total / meter_kwh if meter_kwh > 0 else 0.0
 
+            # Decompose the landed tariff build-up:
+            #   capacity_per_kwh = the TRUE capacity charge expressed per meter kWh
+            #   lcoe_markup      = LCOE × (busbar/meter - 1) — the extra paid per meter
+            #                      kWh because LCOE applies to busbar but landed
+            #                      is measured on meter (grid-loss markup)
+            # Together: landed = LCOE + wheeling + elec_tax + banking_per_kwh
+            #                  + capacity_per_kwh + lcoe_markup
+            cap_per_kwh    = annual_capacity_rs / meter_kwh if meter_kwh > 0 else 0.0
+            lcoe_markup    = (
+                lcoe_inr_per_kwh * (busbar_kwh / meter_kwh - 1)
+                if meter_kwh > 0 else 0.0
+            )
+
             landed_series.append(landed)
             re_payment_series.append(re_payment)
             wheeling_series.append(wheeling)
             elec_tax_series.append(elec_tax)
             banking_series.append(banking)
             total_cost_series.append(total)
+            capacity_per_kwh_series.append(cap_per_kwh)
+            lcoe_markup_per_kwh_series.append(lcoe_markup)
 
         return {
             # Primary
@@ -140,6 +157,9 @@ class LandedTariffModel:
             "annual_electricity_tax":    elec_tax_series,
             "annual_banking":            banking_series,
             "annual_total_cost":         total_cost_series,
+            # Per-kWh decomposition of the landed tariff (useful for dashboards)
+            "capacity_charge_per_kwh_series":  capacity_per_kwh_series,
+            "lcoe_markup_per_kwh_series":      lcoe_markup_per_kwh_series,
             # Unit rates (for audit)
             "ctu_per_mw_month":          self._ctu_per_mw_month,
             "stu_per_mw_month":          self._stu_per_mw_month,

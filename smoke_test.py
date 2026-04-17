@@ -381,10 +381,13 @@ try:
     _life      = int(config.project["project"]["project_life_years"])
 
     # ── Cohort registry totals ────────────────────────────────────────────────
+    from hybrid_plant.data_loader import operating_value as _op
     _reg = CohortRegistry(initial_containers=10)
     _reg.add(install_year=8, containers=4)
-    # Year 10: initial cohort age=10 (SOH[10]), aug cohort age=3 (SOH[3])
-    _expected_eff = 10 * _csize * _soh[10] + 4 * _csize * _soh[3]
+    # Year 10 under end-of-year convention:
+    #   initial cohort age=10 → operating_value(soh,10) = soh[9]
+    #   aug cohort     age=3  → operating_value(soh, 3) = soh[2]
+    _expected_eff = 10 * _csize * _op(_soh, 10) + 4 * _csize * _op(_soh, 3)
     _actual_eff   = _reg.effective_capacity_mwh(10, _csize, _soh)
     check("cohort registry totals match expected",
           _math.isclose(_actual_eff, _expected_eff, rel_tol=1e-12),
@@ -395,7 +398,7 @@ try:
           f"n={_n}  blend={round(_soh_blend,4)}")
     check("aug cohort inactive before install year",
           _reg.effective_capacity_mwh(7, _csize, _soh) ==
-          10 * _csize * _soh[7])
+          10 * _csize * _op(_soh, 7))
 
     # ── LifecycleSimulator — fast_mode ────────────────────────────────────────
     _sim_params = {
@@ -424,7 +427,9 @@ try:
           len(_lc_fast.event_log) == 0)
 
     # ── LifecycleSimulator — triggered event, lump cost formula ───────────────
-    _cuf_y1  = compute_plant_cuf(_eng.plant, _sim_params, 30, _soh[1])
+    _y1_sim = _eng.evaluate(**_sim_params)
+    from hybrid_plant.augmentation.cuf_evaluator import year1_busbar_mwh
+    _cuf_y1 = compute_plant_cuf(year1_busbar_mwh(_y1_sim), _sim_params["ppa_capacity_mw"])
     _lc_trig = _sim.simulate(
         params=_sim_params, initial_containers=30,
         trigger_threshold_cuf=_cuf_y1 * 0.93,
@@ -434,7 +439,7 @@ try:
     check("lifecycle simulator runs without exception (triggered)",
           len(_lc_trig.cuf_series) == _life)
     check("event_log entries are well-formed",
-          all({"year","trigger_cuf","target_cuf","post_event_cuf",
+          all({"year","trigger_cuf","adjusted_target","post_event_cuf",
                "k_containers","lump_cost_rs"}.issubset(ev.keys())
               for ev in _lc_trig.event_log),
           f"n_events={len(_lc_trig.event_log)}")
