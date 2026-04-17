@@ -13,7 +13,7 @@ bess:
     file: "data/bess_soh_curve.csv"
 
   augmentation:
-    enabled: false
+    enabled: true
     solver_aware: false                          # only relevant when enabled=true
 
     mode: "optimized"                           # optimized | triggered | fixed (only optimized used in current scope; others are stubs)
