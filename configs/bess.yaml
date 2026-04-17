@@ -14,7 +14,7 @@ bess:
 
   augmentation:
     enabled: true
-    solver_aware: true                          # only relevant when enabled=true
+    solver_aware: false                          # only relevant when enabled=true
 
     mode: "optimized"                           # optimized | triggered | fixed (only optimized used in current scope; others are stubs)
 
