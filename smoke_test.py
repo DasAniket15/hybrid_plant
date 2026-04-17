@@ -464,7 +464,9 @@ try:
 
     # ── AugmentationEngine.evaluate_scenario ─────────────────────────────────
     _aug_engine = AugmentationEngine(
-        config, data, _eng, _soh, trigger_threshold_cuf=_cuf_y1 * 0.93
+        config, data, _eng, _soh,
+        trigger_threshold_cuf = _cuf_y1 * 0.93,
+        pass1_lcoe            = None,    # no payback filter in smoke test
     )
     _aug_res = _aug_engine.evaluate_scenario(_sim_params, fast_mode=True)
     _aug_fi  = _aug_res["finance"]
@@ -477,6 +479,128 @@ try:
            "cuf_series","cohort_snapshot","cohort_capacity_timeline",
            "total_lump_cost_rs","total_om_cost_rs","n_events"}.issubset(
               _aug_fi["augmentation"].keys()))
+    check("skipped_event_log key present in augmentation dict",
+          "skipped_event_log" in _aug_fi["augmentation"])
+    check("n_skipped key present in augmentation dict",
+          "n_skipped" in _aug_fi["augmentation"])
+    check("skipped_event_log is a list",
+          isinstance(_aug_fi["augmentation"]["skipped_event_log"], list))
+    check("n_skipped matches skipped_event_log length",
+          _aug_fi["augmentation"]["n_skipped"] ==
+          len(_aug_fi["augmentation"]["skipped_event_log"]))
+
+    # ── initial_containers matches params["bess_containers"] (no-oversize path) ─
+    check("initial_containers == bess_containers when no oversize",
+          _aug_fi["augmentation"]["initial_containers"] == _sim_params["bess_containers"])
+
+    # ── bess.yaml new keys present ──────────────────────────────────────────
+    _aug_cfg = config.bess["bess"]["augmentation"]
+    check("bess.yaml: solver_aware key removed",
+          "solver_aware" not in _aug_cfg)
+    check("bess.yaml: mode key removed",
+          "mode" not in _aug_cfg)
+    check("bess.yaml: fixed_schedule key removed",
+          "fixed_schedule" not in _aug_cfg)
+    check("bess.yaml: max_oversize_containers present",
+          "max_oversize_containers" in _aug_cfg)
+    check("bess.yaml: oversize_patience present",
+          "oversize_patience" in _aug_cfg)
+    check("bess.yaml: oversize_npv_tolerance_rs present",
+          "oversize_npv_tolerance_rs" in _aug_cfg)
+    check("bess.yaml: payback_filter block present",
+          "payback_filter" in _aug_cfg)
+    check("bess.yaml: payback_filter.enabled present",
+          "enabled" in _aug_cfg["payback_filter"])
+    check("bess.yaml: trigger_tolerance_pp >= 0.01 (no longer near-zero)",
+          float(_aug_cfg.get("trigger_tolerance_pp", 0)) >= 0.01)
+    check("bess.yaml: max_augmentation_containers_per_event <= 100",
+          int(_aug_cfg.get("max_augmentation_containers_per_event", 9999)) <= 100)
+
+    # ── OversizeOptimizer module importable ─────────────────────────────────
+    from hybrid_plant.augmentation.oversize_optimizer import (
+        find_optimal_oversize, OversizeResult
+    )
+    check("oversize_optimizer module importable", True)
+    check("find_optimal_oversize callable", callable(find_optimal_oversize))
+    check("OversizeResult is a class", isinstance(OversizeResult, type))
+
+    # ── LifecycleResult.skipped_event_log field exists ──────────────────────
+    from hybrid_plant.augmentation.lifecycle_simulator import LifecycleResult
+    import dataclasses as _dc
+    _lc_fields = {f.name for f in _dc.fields(LifecycleResult)}
+    check("LifecycleResult has skipped_event_log field",
+          "skipped_event_log" in _lc_fields)
+
+    # ── LifecycleSimulator accepts event_filter kwarg ───────────────────────
+    import inspect as _inspect
+    _lc_sig = _inspect.signature(LifecycleSimulator.__init__)
+    check("LifecycleSimulator.__init__ has event_filter param",
+          "event_filter" in _lc_sig.parameters)
+
+    # ── AugmentationEngine accepts pass1_lcoe kwarg ─────────────────────────
+    _ae_sig = _inspect.signature(AugmentationEngine.__init__)
+    check("AugmentationEngine.__init__ has pass1_lcoe param",
+          "pass1_lcoe" in _ae_sig.parameters)
+
+    # ── evaluate_scenario accepts initial_containers kwarg ──────────────────
+    _es_sig = _inspect.signature(AugmentationEngine.evaluate_scenario)
+    check("evaluate_scenario has initial_containers param",
+          "initial_containers" in _es_sig.parameters)
+
+    # ── SolverEngine has no run_augmentation_aware method ───────────────────
+    from hybrid_plant.solver.solver_engine import SolverEngine
+    check("SolverEngine.run_augmentation_aware removed",
+          not hasattr(SolverEngine, "run_augmentation_aware"))
+
+    # ── SolverResult has no augmentation_result field ───────────────────────
+    from hybrid_plant.solver.solver_engine import SolverResult
+    _sr_fields = {f.name for f in _dc.fields(SolverResult)}
+    check("SolverResult.augmentation_result field removed",
+          "augmentation_result" not in _sr_fields)
+
+    # ── Minimum-k semantics: event_filter=None → skipped_event_log is empty ─
+    _sim_no_filter = LifecycleSimulator(
+        config=config, plant_engine=_eng.plant,
+        soh_curve=_soh, solar_eff_curve=_solar_eff,
+        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
+        event_filter=None,
+    )
+    _lc_no_filter = _sim_no_filter.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=_cuf_y1 * 0.93,
+        restoration_target_cuf=_cuf_y1,
+        fast_mode=True,
+    )
+    check("skipped_event_log empty when event_filter=None",
+          _lc_no_filter.skipped_event_log == [],
+          f"got {len(_lc_no_filter.skipped_event_log)} skipped")
+
+    # ── event_filter=block-all → all events skip, none fire ─────────────────
+    _sim_block = LifecycleSimulator(
+        config=config, plant_engine=_eng.plant,
+        soh_curve=_soh, solar_eff_curve=_solar_eff,
+        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
+        event_filter=lambda _: False,   # block everything
+    )
+    _lc_block = _sim_block.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=_cuf_y1 * 0.93,
+        restoration_target_cuf=_cuf_y1,
+        fast_mode=True,
+    )
+    check("event_log empty when event_filter blocks all",
+          _lc_block.event_log == [],
+          f"got {len(_lc_block.event_log)} fired")
+    _any_skipped = len(_lc_block.skipped_event_log) > 0 or len(_lc_no_filter.event_log) == 0
+    check("skipped_event_log non-empty when block-all filter active (if events exist)",
+          _any_skipped)
+
+    # ── OversizeResult structure ─────────────────────────────────────────────
+    _os_result_fields = {f.name for f in _dc.fields(OversizeResult)}
+    check("OversizeResult has best_extra field",       "best_extra"              in _os_result_fields)
+    check("OversizeResult has best_initial_containers","best_initial_containers" in _os_result_fields)
+    check("OversizeResult has best_result field",      "best_result"             in _os_result_fields)
+    check("OversizeResult has sweep_log field",        "sweep_log"               in _os_result_fields)
 
 except Exception as e:
     check("Augmentation Engine — EXCEPTION", False, str(e))

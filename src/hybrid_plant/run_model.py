@@ -400,100 +400,117 @@ def print_section7(fi, data, params, aug_data=None):
 def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
     """Section 6b — Augmentation Timeline & Economics."""
     sep("SECTION 6b — AUGMENTATION")
-    events     = aug_data["event_log"]
-    init_cont  = aug_data["initial_containers"]
-    container_size = float(fi.get("_container_size_mwh", 5.015))
+    events          = aug_data["event_log"]
+    skipped_events  = aug_data.get("skipped_event_log", [])
+    init_cont       = aug_data["initial_containers"]
+    container_size  = float(fi.get("_container_size_mwh", 5.015))
+    solver_b_star   = baseline_result.best_params["bess_containers"]
 
     total_added = aug_data["total_containers_added"]
     n_events    = aug_data["n_events"]
+    n_skipped   = aug_data.get("n_skipped", len(skipped_events))
 
     lump_total = aug_data["total_lump_cost_rs"]
     om_total   = aug_data["total_om_cost_rs"]
 
-    print(f"\n  {'Trigger threshold CUF (baseline Y1)':<44} : {aug_data['trigger_threshold_cuf']:.4f} %")
-    print(f"  {'Restoration target CUF (this scenario Y1)':<44} : {aug_data['restoration_target_cuf']:.4f} %")
-    print(f"  Adjusted target = Y1 CUF × weighted operating eff (solar+wind deg factored in)")
-    print()
-    print(f"  {'Initial BESS containers':<44} : {init_cont}")
-    print(f"  {'Augmentation events':<44} : {n_events}")
-    print(f"  {'Total containers added':<44} : {total_added}")
-    print(f"  {'Total augmentation lump-sum cost':<44} : Rs {cr(lump_total):.2f} Cr  (OPEX, undepreciated)")
-    print(f"  {'Total augmentation O&M (lifetime)':<44} : Rs {cr(om_total):.2f} Cr")
+    # Oversize sweep metadata (present when oversizing ran)
+    extra_containers = aug_data.get("extra_containers_oversized", init_cont - solver_b_star)
+    sweep_log        = aug_data.get("oversize_sweep_log", [])
 
-    if events:
-        print(f"\n  AUGMENTATION SCHEDULE\n")
+    print(f"\n  {'Trigger threshold CUF (Pass-1 baseline Y1)':<46} : {aug_data['trigger_threshold_cuf']:.4f} %")
+    print(f"  {'Restoration target CUF (oversized Y1)':<46} : {aug_data['restoration_target_cuf']:.4f} %")
+    print(f"  Adjusted target = restoration_target × weighted solar/wind deg factor")
+    print()
+    print(f"  {'Pass-1 solver containers (B*)':<46} : {solver_b_star}")
+    print(f"  {'Extra containers added upfront (oversize)':<46} : {extra_containers}")
+    print(f"  {'Initial BESS containers (B* + extra)':<46} : {init_cont}")
+    print()
+
+    if sweep_log:
+        n_candidates = len(sweep_log)
+        best_entry   = next((e for e in sweep_log if e["extra"] == extra_containers), None)
+        best_npv_cr  = cr(best_entry["npv"]) if best_entry else float("nan")
+        print(f"  OVERSIZE SWEEP SUMMARY")
+        print(f"  {'Candidates evaluated':<46} : {n_candidates}")
+        print(f"  {'Best extra':<46} : {extra_containers}")
+        print(f"  {'Best oversized NPV':<46} : Rs {best_npv_cr:.2f} Cr")
+        if sweep_log:
+            print(f"\n  Sweep log (first 8 + last 3 entries):")
+            shown = sweep_log[:8]
+            if len(sweep_log) > 11:
+                shown_tail = sweep_log[-3:]
+            elif len(sweep_log) > 8:
+                shown_tail = sweep_log[8:]
+            else:
+                shown_tail = []
+            print(f"  {'Extra':>6}  {'InitCont':>8}  {'NPV (Cr)':>10}  {'Events':>7}  {'Skipped':>8}  {'Reason'}")
+            sep()
+            for entry in shown:
+                flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
+                print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
+                      f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
+                      f"{entry.get('n_skipped', 0):>8}  "
+                      f"{entry.get('terminated_reason') or '':>10}{flag}")
+            if shown_tail:
+                print(f"  {'...':<6}")
+                for entry in shown_tail:
+                    flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
+                    print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
+                          f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
+                          f"{entry.get('n_skipped', 0):>8}  "
+                          f"{entry.get('terminated_reason') or '':>10}{flag}")
+            sep()
+    print()
+    print(f"  {'Augmentation events fired':<46} : {n_events}")
+    print(f"  {'Augmentation events skipped (payback filter)':<46} : {n_skipped}")
+    print(f"  {'Total containers added (events only)':<46} : {total_added}")
+    print(f"  {'Total augmentation lump-sum cost':<46} : Rs {cr(lump_total):.2f} Cr  (OPEX, undepreciated)")
+    print(f"  {'Total augmentation O&M (lifetime)':<46} : Rs {cr(om_total):.2f} Cr")
+
+    # Combined fired + skipped event table
+    all_events = (
+        [{**ev, "_fired": True}  for ev in events] +
+        [{**ev, "_fired": False} for ev in skipped_events]
+    )
+    all_events.sort(key=lambda e: e["year"])
+
+    if all_events:
+        print(f"\n  AUGMENTATION EVENT TIMELINE")
+        print(f"  (Upfront oversize: {solver_b_star} → {init_cont} containers at Y1; "
+              f"event-year additions shown below)\n")
         hdr = (
-            f"  {'Yr':>4}  {'Pre-CUF':>9}  {'Cont':>5}  {'New MWh':>8}  "
-            f"{'Lump (Cr)':>10}  {'Post-CUF':>9}  {'AdjTgt':>8}  {'HardThr':>8}  "
-            f"{'≥Adj?':>5}  {'≥Hard?':>6}  {'CumCont':>8}"
+            f"  {'Yr':>4}  {'Status':>7}  {'Pre-CUF':>9}  {'Cont':>5}  {'New MWh':>8}  "
+            f"{'Lump (Cr)':>10}  {'Post-CUF':>9}  {'AdjTgt':>8}  {'≥Adj?':>5}  {'CumCont':>8}"
         )
         print(hdr)
         sep()
         cum_containers = init_cont
-        for ev in events:
-            cum_containers += ev["k_containers"]
-            new_mwh = ev["k_containers"] * container_size
-            reached_adj  = "Y" if ev.get("reached_adjusted", False) else "N"
-            reached_hard = "Y" if ev.get("reached_hard", False) else "N"
+        for ev in all_events:
+            fired       = ev["_fired"]
+            status      = "FIRED" if fired else "SKIPPED"
+            k           = ev["k_containers"]    # 0 if skipped
+            cum_containers += k
+            new_mwh     = k * container_size
+            reached_adj = "Y" if ev.get("reached_adjusted", False) else "N"
+            lump_str    = f"{cr(ev['lump_cost_rs']):>10.2f}" if fired else f"{'(skipped)':>10}"
             print(
                 f"  {ev['year']:>4}  "
+                f"{status:>7}  "
                 f"{ev['trigger_cuf']:>8.4f}%  "
-                f"{ev['k_containers']:>5}  "
+                f"{k:>5}  "
                 f"{new_mwh:>8.2f}  "
-                f"{cr(ev['lump_cost_rs']):>10.2f}  "
+                f"{lump_str}  "
                 f"{ev['post_event_cuf']:>8.4f}%  "
                 f"{ev.get('adjusted_target', float('nan')):>7.4f}%  "
-                f"{ev.get('hard_threshold', float('nan')):>7.4f}%  "
                 f"{reached_adj:>5}  "
-                f"{reached_hard:>6}  "
                 f"{cum_containers:>8}"
             )
         sep()
         print(f"  ≥Adj?   = post-event CUF ≥ adjusted target (achievable given solar/wind deg)")
-        print(f"  ≥Hard?  = post-event CUF ≥ hard threshold (Y1 baseline CUF)")
+        print(f"  SKIPPED = event failed payback filter (lump cost > NPV of incremental RE)")
     else:
         print("\n  (No augmentation events triggered over 25-year life)")
 
-
-def print_section8_baseline_comparison(baseline_result, aug_result_finance: dict) -> None:
-    """Section 8 — Baseline vs Augmentation-Aware comparison (solver_aware mode only)."""
-    sep("SECTION 8 — BASELINE vs AUGMENTATION-AWARE")
-
-    b_params  = baseline_result.best_params
-    b_fi      = baseline_result.full_result["finance"]
-    a_fi      = aug_result_finance
-    aug_data  = a_fi.get("augmentation", {})
-
-    b_sv  = b_fi["savings_breakdown"]
-    a_sv  = a_fi["savings_breakdown"]
-    b_lts = b_fi["landed_tariff_series"]
-    a_lts = a_fi["landed_tariff_series"]
-
-    a_params_containers = aug_data.get("initial_containers", "N/A")
-    b_cuf = aug_data.get("trigger_threshold_cuf",   float("nan"))
-    a_cuf = aug_data.get("restoration_target_cuf",  float("nan"))
-
-    rows = [
-        ("BESS containers (initial)",   b_params["bess_containers"],              a_params_containers,          None),
-        ("Solar capacity (MW)",          round(b_params["solar_capacity_mw"], 1),  round(a_fi.get("_solar_mw", float("nan")), 1) if "_solar_mw" in a_fi else "—", None),
-        ("PPA capacity (MW)",            round(b_params["ppa_capacity_mw"], 1),    "—",                          None),
-        ("Savings NPV (Rs Crore)",       round(cr(b_fi["savings_npv"]), 2),        round(cr(a_fi["savings_npv"]), 2),  None),
-        ("Year-1 savings (Rs Crore)",    round(cr(b_sv["annual_savings"][0]), 2),  round(cr(a_sv["annual_savings"][0]), 2),  None),
-        ("Year-25 savings (Rs Crore)",   round(cr(b_sv["annual_savings"][-1]), 2), round(cr(a_sv["annual_savings"][-1]), 2), None),
-        ("LCOE (Rs/kWh)",                round(b_fi["lcoe_inr_per_kwh"], 4),       round(a_fi["lcoe_inr_per_kwh"], 4),  None),
-        ("Plant CUF Y1 (%)",             round(b_cuf, 2),                          round(a_cuf, 2),              None),
-    ]
-
-    print(f"\n  {'Metric':<36}  {'Baseline':>12}  {'Augmented':>12}  {'Delta':>10}")
-    sep()
-    for label, bv, av, _ in rows:
-        try:
-            delta = round(float(av) - float(bv), 4)
-            delta_str = f"{delta:>+10}"
-        except (TypeError, ValueError):
-            delta_str = f"{'—':>10}"
-        print(f"  {label:<36}  {str(bv):>12}  {str(av):>12}  {delta_str}")
-    sep()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -985,9 +1002,8 @@ if __name__ == "__main__":
     finance_engine = FinanceEngine(config, data)
     solver         = SolverEngine(config, data, energy_engine, finance_engine)
 
-    aug_cfg      = config.bess["bess"]["augmentation"]
-    aug_enabled  = bool(aug_cfg.get("enabled", False))
-    solver_aware = bool(aug_cfg.get("solver_aware", True))
+    aug_cfg     = config.bess["bess"]["augmentation"]
+    aug_enabled = bool(aug_cfg.get("enabled", False))
 
     n_trials = config.solver["solver"].get("n_trials", 300)
 
@@ -995,7 +1011,6 @@ if __name__ == "__main__":
     print(f"\n[Pass 1] Baseline solver ({n_trials} trials) …")
     baseline_result = solver.run(n_trials=n_trials, show_progress=True)
 
-    aug_engine       = None
     aug_data         = None
     baseline_cuf_ser = None
 
@@ -1003,87 +1018,98 @@ if __name__ == "__main__":
         from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _cuf_fn, year1_busbar_mwh
         from hybrid_plant.data_loader import load_soh_curve, operating_value
         from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+        from hybrid_plant.augmentation.oversize_optimizer import find_optimal_oversize
 
-        soh_curve = load_soh_curve(config)
-
-        # Baseline Y1 CUF = busbar / (PPA × 8760). Runs the baseline's Y1
-        # simulation with fresh-plant operating values (all = 1.0) exactly
-        # the same way Year1Engine.evaluate produces them — so we just re-use
-        # the baseline_result's Y1 busbar directly if available, else re-sim.
-        b_y1 = baseline_result.full_result.get("year1")
-        if b_y1 is None:
-            b_y1 = energy_engine.evaluate(**baseline_result.best_params)
-        trigger_threshold_cuf = _cuf_fn(
-            year1_busbar_mwh(b_y1),
-            baseline_result.best_params["ppa_capacity_mw"],
-        )
-        print(f"  [Aug] Trigger threshold CUF (baseline Y1): {trigger_threshold_cuf:.4f}%")
-
-        aug_engine = AugmentationEngine(
-            config, data, energy_engine, soh_curve, trigger_threshold_cuf
-        )
-
-        # Compute the NO-AUGMENTATION baseline CUF series — what would happen
-        # to Plant CUF if the baseline best config degraded naturally without
-        # any augmentation.  Used as the grey reference line on the aug plot.
-        from pathlib import Path as _Path
-
-        def _load_curve_local(cfg_path: str, column: str) -> dict:
-            import pandas as _pd
-            root = find_project_root()
-            df = _pd.read_csv(root / cfg_path)
-            df.columns = df.columns.str.strip().str.lower()
-            return dict(zip(df["year"].astype(int), df[column.lower()]))
-
-        solar_eff_curve = _load_curve_local(
-            config.project["generation"]["solar"]["degradation"]["file"], "efficiency"
-        )
-        wind_eff_curve = _load_curve_local(
-            config.project["generation"]["wind"]["degradation"]["file"], "efficiency"
-        )
-        _base_params = baseline_result.best_params
-        _ppa         = _base_params["ppa_capacity_mw"]
-        baseline_cuf_ser = []
-        for yr in range(1, 26):
-            _s_eff = operating_value(solar_eff_curve, yr)
-            _w_eff = operating_value(wind_eff_curve,  yr)
-            _soh_y = operating_value(soh_curve,       yr)
-            _sim = energy_engine.plant.simulate(
-                solar_capacity_mw  = _base_params["solar_capacity_mw"] * _s_eff,
-                wind_capacity_mw   = _base_params["wind_capacity_mw"]  * _w_eff,
-                bess_containers    = _base_params["bess_containers"],
-                charge_c_rate      = _base_params["charge_c_rate"],
-                discharge_c_rate   = _base_params["discharge_c_rate"],
-                ppa_capacity_mw    = _ppa,
-                dispatch_priority  = _base_params["dispatch_priority"],
-                bess_charge_source = _base_params["bess_charge_source"],
-                loss_factor        = energy_engine.grid.loss_factor,
-                bess_soh_factor    = _soh_y,
+        # Guard: if solver chose bess_containers=0, augmentation has nothing to work with
+        if baseline_result.best_params["bess_containers"] == 0:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Augmentation enabled but solver chose bess_containers=0. "
+                "Skipping augmentation path."
             )
-            _busbar_yr = (float(np.sum(_sim["solar_direct_pre"]))
-                          + float(np.sum(_sim["wind_direct_pre"]))
-                          + float(np.sum(_sim["discharge_pre"])))
-            baseline_cuf_ser.append(_cuf_fn(_busbar_yr, _ppa))
+            aug_enabled = False
+        else:
+            soh_curve = load_soh_curve(config)
 
-    # ── Choose result to display ──────────────────────────────────────────────
-    if not aug_enabled:
-        result   = baseline_result
-        aug_data = None
+            # trigger_threshold_cuf = pre-oversize Y1 CUF (fixed hard floor)
+            b_y1 = baseline_result.full_result.get("year1")
+            if b_y1 is None:
+                b_y1 = energy_engine.evaluate(**baseline_result.best_params)
+            trigger_threshold_cuf = _cuf_fn(
+                year1_busbar_mwh(b_y1),
+                baseline_result.best_params["ppa_capacity_mw"],
+            )
+            print(f"  [Aug] Trigger threshold CUF (Pass-1 Y1): {trigger_threshold_cuf:.4f}%")
 
-    elif aug_enabled and not solver_aware:
-        print("\n[Augmentation] Post-processing baseline best (slow mode) …")
-        aug_eval = aug_engine.evaluate_scenario(baseline_result.best_params, fast_mode=False)
-        # Merge augmented finance into baseline SolverResult
-        baseline_result.full_result["finance"] = aug_eval["finance"]
-        baseline_result.full_result["year1"]   = aug_eval["year1"]
-        result   = baseline_result
-        aug_data = aug_eval["finance"]["augmentation"]
+            aug_engine = AugmentationEngine(
+                config, data, energy_engine, soh_curve,
+                trigger_threshold_cuf = trigger_threshold_cuf,
+                pass1_lcoe            = baseline_result.best_lcoe,
+            )
 
-    else:
-        # Full solver-aware two-pass mode
-        print(f"\n[Pass 2] Augmentation-aware solver ({n_trials} trials) …")
-        result   = solver.run_augmentation_aware(aug_engine, n_trials=n_trials, show_progress=True)
-        aug_data = result.full_result["finance"]["augmentation"]
+            # Compute NO-AUGMENTATION baseline CUF series for the dashboard plot
+            def _load_curve_local(cfg_path: str, column: str) -> dict:
+                import pandas as _pd
+                root = find_project_root()
+                df = _pd.read_csv(root / cfg_path)
+                df.columns = df.columns.str.strip().str.lower()
+                return dict(zip(df["year"].astype(int), df[column.lower()]))
+
+            solar_eff_curve = _load_curve_local(
+                config.project["generation"]["solar"]["degradation"]["file"], "efficiency"
+            )
+            wind_eff_curve = _load_curve_local(
+                config.project["generation"]["wind"]["degradation"]["file"], "efficiency"
+            )
+            _base_params = baseline_result.best_params
+            _ppa         = _base_params["ppa_capacity_mw"]
+            baseline_cuf_ser = []
+            for yr in range(1, 26):
+                _s_eff = operating_value(solar_eff_curve, yr)
+                _w_eff = operating_value(wind_eff_curve,  yr)
+                _soh_y = operating_value(soh_curve,       yr)
+                _sim = energy_engine.plant.simulate(
+                    solar_capacity_mw  = _base_params["solar_capacity_mw"] * _s_eff,
+                    wind_capacity_mw   = _base_params["wind_capacity_mw"]  * _w_eff,
+                    bess_containers    = _base_params["bess_containers"],
+                    charge_c_rate      = _base_params["charge_c_rate"],
+                    discharge_c_rate   = _base_params["discharge_c_rate"],
+                    ppa_capacity_mw    = _ppa,
+                    dispatch_priority  = _base_params["dispatch_priority"],
+                    bess_charge_source = _base_params["bess_charge_source"],
+                    loss_factor        = energy_engine.grid.loss_factor,
+                    bess_soh_factor    = _soh_y,
+                )
+                _busbar_yr = (float(np.sum(_sim["solar_direct_pre"]))
+                              + float(np.sum(_sim["wind_direct_pre"]))
+                              + float(np.sum(_sim["discharge_pre"])))
+                baseline_cuf_ser.append(_cuf_fn(_busbar_yr, _ppa))
+
+            # ── Oversize sweep ────────────────────────────────────────────────
+            print("\n[Augmentation] Running oversize sweep (full mode) …")
+            os_result = find_optimal_oversize(
+                augmentation_engine  = aug_engine,
+                base_params          = baseline_result.best_params,
+                threshold_cuf        = trigger_threshold_cuf,
+                max_extra_containers = int(aug_cfg.get("max_oversize_containers", 500)),
+                patience             = int(aug_cfg.get("oversize_patience", 3)),
+                tolerance            = float(aug_cfg.get("oversize_npv_tolerance_rs", 1e3)),
+            )
+            print(f"  [Aug] Oversize sweep done: best_extra={os_result.best_extra}  "
+                  f"initial={os_result.best_initial_containers}  "
+                  f"candidates={len(os_result.sweep_log)}")
+
+            # Merge best-oversize finance into baseline_result for dashboard
+            baseline_result.full_result["finance"] = os_result.best_result["finance"]
+            baseline_result.full_result["year1"]   = os_result.best_result["year1"]
+            aug_data = os_result.best_result["finance"]["augmentation"]
+            # Attach sweep metadata for Section 6b
+            aug_data["oversize_sweep_log"]            = os_result.sweep_log
+            aug_data["extra_containers_oversized"]    = os_result.best_extra
+            aug_data["initial_containers_oversized"]  = os_result.best_initial_containers
+
+    # ── Resolve final result for rendering ───────────────────────────────────
+    result = baseline_result
 
     # ── Render dashboard ──────────────────────────────────────────────────────
     params = result.best_params
@@ -1104,8 +1130,6 @@ if __name__ == "__main__":
     if aug_enabled and aug_data is not None:
         print_section6b(aug_data, baseline_result, fi)
     print_section7(fi, data, params, aug_data)
-    if aug_enabled and solver_aware and aug_data is not None:
-        print_section8_baseline_comparison(baseline_result, fi)
 
     sep("SOLVER STATS")
     print(f"\n  {'Trials completed':<38} : {result.n_trials_completed}")
