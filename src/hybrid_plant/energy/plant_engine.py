@@ -419,7 +419,11 @@ class PlantEngine:
             discharge_post = discharge_pre  * loss_factor          # post-losses at meter
 
             discharge[h]      = discharge_pre
-            discharge_loss[h] = discharge_pre * (1 - self.discharge_eff)
+            # True round-trip loss = discharge_raw - discharge_pre = discharge_raw × (1 - η_d).
+            # Previously used `discharge_pre × (1 - η_d)` which under-reported the loss by
+            # a factor of η_d (a cosmetic bug — not used downstream in any economic calc,
+            # but the returned diagnostic array was wrong).
+            discharge_loss[h] = discharge_raw * (1 - self.discharge_eff)
             export[h]         = direct_pre + discharge_pre
 
             solar_direct[h]       = solar_d

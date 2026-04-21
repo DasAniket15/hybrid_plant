@@ -85,12 +85,6 @@ solver:
         - false
       fixed_value: false         # value used while out of scope
 
-    bess_augmentation_trigger_percent:
-      scope: future
-      type: continuous
-      min: 80
-      max: 100
-      fixed_value: 80.0         # value used while out of scope
 
   # ─────────────────────────────────────────────────────────────────────
   # CONSTRAINTS

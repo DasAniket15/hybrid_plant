@@ -20,9 +20,16 @@ Capturing these effects requires a full simulation, not scalar scaling.
 
 Degradation model per year t
 ────────────────────────────
-  Solar AC capacity   = base_solar_mw  × solar_eff[t]   (efficiency curve)
-  Wind capacity       = base_wind_mw   × wind_eff[t]    (efficiency curve)
-  BESS energy cap     = containers × container_size × soh[t]
+All three degradation curves (solar efficiency, wind efficiency, BESS SOH)
+use the **end-of-year** convention via ``data_loader.operating_value``:
+
+  • Year 1 operating value = 1.0 for all curves (fresh plant)
+  • Year N ≥ 2 operating value = ``curve[N - 1]`` (end of prior year)
+
+Per-year scaling:
+  Solar AC capacity   = base_solar_mw  × operating_value(solar_eff, year)
+  Wind capacity       = base_wind_mw   × operating_value(wind_eff,  year)
+  BESS energy cap     = containers × container_size × operating_value(soh, year)
                         (passed to PlantEngine as bess_soh_factor)
   Power caps, BESS    = C-rate × degraded energy cap    (inside PlantEngine)
 
@@ -45,6 +52,7 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
 
 
@@ -156,8 +164,12 @@ class EnergyProjection:
 
     def _project_fast(self) -> dict[str, np.ndarray]:
         """
-        Fast path: scale Year-1 scalar totals by annual degradation factors.
+        Fast path: scale Year-1 scalar totals by annual operating values.
         Runs in microseconds. Used during solver trials for ranking only.
+
+        Year-1 totals (``self._solar_1`` etc.) were produced by a Year-1
+        simulation with operating values 1.0 (fresh plant), so scaling by
+        ``operating_value(curve, year)`` directly yields the year-t total.
         """
         solar_arr   = np.zeros(self._project_life)
         wind_arr    = np.zeros(self._project_life)
@@ -166,9 +178,9 @@ class EnergyProjection:
         meter_arr   = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
-            s = self._solar_1   * self._solar_eff.get(year, 1.0)
-            w = self._wind_1    * self._wind_eff.get(year, 1.0)
-            b = self._battery_1 * self._soh.get(year, 1.0)
+            s = self._solar_1   * operating_value(self._solar_eff, year)
+            w = self._wind_1    * operating_value(self._wind_eff,  year)
+            b = self._battery_1 * operating_value(self._soh,       year)
 
             solar_arr[i]   = s
             wind_arr[i]    = w
@@ -206,9 +218,9 @@ class EnergyProjection:
         meter_arr   = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
-            solar_eff = self._solar_eff.get(year, 1.0)
-            wind_eff  = self._wind_eff.get(year, 1.0)
-            soh       = self._soh.get(year, 1.0)
+            solar_eff = operating_value(self._solar_eff, year)
+            wind_eff  = operating_value(self._wind_eff,  year)
+            soh       = operating_value(self._soh,       year)
 
             yr = self._plant.simulate(
                 solar_capacity_mw  = sp["solar_capacity_mw"] * solar_eff,

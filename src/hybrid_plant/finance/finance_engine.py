@@ -57,6 +57,8 @@ class FinanceEngine:
         ppa_capacity_mw:             float,
         banked_energy_kwh_projection: list[float] | None = None,
         fast_mode:                   bool = False,
+        energy_projection_override:  dict | None = None,
+        opex_augmentation_series:    list[float] | None = None,
     ) -> dict[str, Any]:
         """
         Run the full finance pipeline for a given plant configuration.
@@ -71,6 +73,14 @@ class FinanceEngine:
         fast_mode                    : if True, use scalar energy projection (solver
                                        trial ranking); if False, use full per-year
                                        re-simulation (final reporting). Default False.
+        energy_projection_override   : if provided, skip EnergyProjection.project()
+                                       and use this dict directly (must have same keys).
+                                       Used by the augmentation engine to inject
+                                       cohort-aware per-year energy totals.
+        opex_augmentation_series     : if provided, this list (length = project_life)
+                                       is added element-wise to opex_projection before
+                                       passing to LCOE.  Used to inject augmentation
+                                       procurement and O&M costs.  Default None (no-op).
 
         Returns
         -------
@@ -88,12 +98,23 @@ class FinanceEngine:
             solar_capacity_mw, wind_capacity_mw, bess_mwh, total_capex
         )
 
+        # Inject augmentation OPEX if provided (element-wise addition)
+        if opex_augmentation_series is not None:
+            opex_projection = [
+                base + aug
+                for base, aug in zip(opex_projection, opex_augmentation_series)
+            ]
+
         # ── 3. Energy projection ──────────────────────────────────────────────
-        projection = EnergyProjection(
-            config        = self._config,
-            data          = self._data,
-            year1_results = year1_results,
-        ).project(fast_mode=fast_mode)
+        if energy_projection_override is not None:
+            # Use the pre-computed cohort-aware projection from LifecycleSimulator
+            projection = energy_projection_override
+        else:
+            projection = EnergyProjection(
+                config        = self._config,
+                data          = self._data,
+                year1_results = year1_results,
+            ).project(fast_mode=fast_mode)
 
         busbar_mwh = projection["delivered_pre_mwh"]
         meter_mwh  = projection["delivered_meter_mwh"]
