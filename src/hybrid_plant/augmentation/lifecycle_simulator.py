@@ -16,8 +16,7 @@ trigger threshold from Pass 1, it:
      noise triggers at the margin).
   3. At each triggered year (up to ``max_augmentation_events`` total),
      searches for the smallest k containers that restore CUF back to
-     the hard threshold, then continues searching in case larger k
-     improves NPV.
+     the hard threshold at the event year via full plant simulation.
   4. Returns per-year energy arrays compatible with EnergyProjection
      outputs, plus augmentation OPEX series, an event log, and metadata
      for the dashboard.
@@ -80,7 +79,7 @@ import numpy as np
 from hybrid_plant.augmentation.cohort import CohortRegistry
 from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import HOURS_PER_YEAR, LAKH_TO_RS
+from hybrid_plant.constants import LAKH_TO_RS
 from hybrid_plant.data_loader import operating_value
 
 logger = logging.getLogger(__name__)
@@ -374,40 +373,6 @@ class LifecycleSimulator:
     # Private helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _fast_future_min_cuf(
-        self,
-        trial_registry:     CohortRegistry,
-        anchor_year:        int,
-        anchor_solar:       float,
-        anchor_wind:        float,
-        anchor_battery:     float,
-        anchor_solar_eff:   float,
-        anchor_wind_eff:    float,
-        anchor_blended_soh: float,
-        ppa_mw:             float,
-    ) -> float:
-        """
-        Return the minimum projected CUF for years anchor_year+1 … project_life,
-        using the same fast-mode linear-scaling approximation as simulate().
-
-        This is cheap (pure arithmetic — no plant.simulate() calls) and used by
-        _find_best_k to check whether a candidate k sustains CUF through the
-        end of the project without another augmentation event.
-        """
-        min_cuf = float("inf")
-        container_size = self._container_size
-        for future_year in range(anchor_year + 1, self._project_life + 1):
-            fs   = operating_value(self._solar_eff, future_year)
-            fw   = operating_value(self._wind_eff,  future_year)
-            _, fsoh = trial_registry.to_plant_params(future_year, container_size, self._soh_curve)
-            solar_t = anchor_solar   * (fs   / anchor_solar_eff)   if anchor_solar_eff   > 0 else 0.0
-            wind_t  = anchor_wind    * (fw   / anchor_wind_eff)    if anchor_wind_eff    > 0 else 0.0
-            batt_t  = anchor_battery * (fsoh / anchor_blended_soh) if anchor_blended_soh > 0 else 0.0
-            cuf_t   = compute_plant_cuf(solar_t + wind_t + batt_t, ppa_mw)
-            if cuf_t < min_cuf:
-                min_cuf = cuf_t
-        return min_cuf
-
     def _find_best_k(
         self,
         params:               dict[str, Any],
@@ -419,32 +384,21 @@ class LifecycleSimulator:
         ppa_mw:               float,
     ) -> tuple[int, float, dict | None]:
         """
-        Find the **minimum** k in [min_k, max_k] such that:
-
-        Gate 1 — post-event CUF at event_year >= hard_threshold_cuf.
-        Gate 2 — projected CUF for ALL years event_year+1 … project_life
-                 >= hard_threshold_cuf (fast-mode approximation).
+        Find the **minimum** k in [min_k, max_k] such that post-event CUF at
+        event_year >= hard_threshold_cuf (Gate 1 — full plant simulation).
 
         Strategy
         ────────
-        Phase 1 (linear scan, Gate 1):
-            Iterate k = min_k … max_k running a full plant.simulate() per k.
-            Cache results.  Stop at the first k that passes Gate 1 (k_min1).
-            If no k passes Gate 1, return the best-CUF k found with a warning.
-
-        Phase 2 (binary search, Gate 2):
-            Among k_min1 … max_k, binary-search for the smallest k whose
-            fast-mode future lookahead also stays >= threshold.
-            If even max_k fails Gate 2, return max_k with an informational
-            warning — a future event will handle the remaining shortfall.
+        Linear scan k = min_k … max_k, running a full plant.simulate() per k.
+        Stop at the first k that passes Gate 1.  Future CUF drops are handled
+        by subsequent augmentation events; the lifecycle simulator allows up to
+        max_augmentation_events total.
 
         Returns
         -------
         (best_k, post_event_cuf_with_best_k, post_event_sim_dict)
         """
         container_size = self._container_size
-
-        # ── helpers ───────────────────────────────────────────────────────────
 
         def _build_registry(k: int) -> CohortRegistry:
             tr = CohortRegistry(registry.cohorts[0].containers)
@@ -475,43 +429,21 @@ class LifecycleSimulator:
             post_cuf = compute_plant_cuf(busbar, ppa_mw)
             return post_cuf, soh_trial, sim, tr
 
-        def _future_ok(k: int, soh_trial: float, sim: dict, tr: CohortRegistry) -> bool:
-            """Gate 2: fast-mode lookahead for years event_year+1 … project_life."""
-            if event_year >= self._project_life:
-                return True   # no future years to check
-            anchor_solar   = float(np.sum(sim["solar_direct_pre"]))
-            anchor_wind    = float(np.sum(sim["wind_direct_pre"]))
-            anchor_battery = float(np.sum(sim["discharge_pre"]))
-            future_min = self._fast_future_min_cuf(
-                trial_registry     = tr,
-                anchor_year        = event_year,
-                anchor_solar       = anchor_solar,
-                anchor_wind        = anchor_wind,
-                anchor_battery     = anchor_battery,
-                anchor_solar_eff   = solar_eff,
-                anchor_wind_eff    = wind_eff,
-                anchor_blended_soh = soh_trial,
-                ppa_mw             = ppa_mw,
-            )
-            return future_min >= hard_threshold_cuf - 1e-9
-
-        # ── Phase 1: linear scan to find k_min1 (Gate 1) ─────────────────────
-        sim_cache: dict[int, tuple[float, float, dict, CohortRegistry]] = {}
-        best_k_g1     = self._min_k
-        best_cuf_g1   = -1.0
-        best_sim_g1:  dict | None = None
-        k_min1: int | None = None
+        best_k_g1    = self._min_k
+        best_cuf_g1  = -1.0
+        best_sim_g1: dict | None = None
+        k_min1_cuf:  float       = -1.0
+        k_min1_sim:  dict | None = None
+        k_min1:      int | None  = None
 
         for k in range(self._min_k, self._max_k + 1):
-            post_cuf, soh_trial, sim, tr = _run_sim(k)
-            sim_cache[k] = (post_cuf, soh_trial, sim, tr)
+            post_cuf, _soh, sim, _tr = _run_sim(k)
             if post_cuf > best_cuf_g1:
                 best_k_g1, best_cuf_g1, best_sim_g1 = k, post_cuf, sim
             if post_cuf >= hard_threshold_cuf - 1e-9:
-                k_min1 = k
+                k_min1, k_min1_cuf, k_min1_sim = k, post_cuf, sim
                 break
 
-        # Gate 1 failed entirely — return the highest-CUF result with a warning
         if k_min1 is None:
             warnings.warn(
                 f"Augmentation Year {event_year}: k-search exhausted max_k={self._max_k} "
@@ -523,35 +455,4 @@ class LifecycleSimulator:
             )
             return best_k_g1, best_cuf_g1, best_sim_g1
 
-        # ── Phase 2: binary search k_min1 … max_k for Gate 2 ─────────────────
-        # First check whether max_k itself passes Gate 2; if not, return it and warn.
-        post_cuf_max, soh_max, sim_max, tr_max = (
-            sim_cache[self._max_k]
-            if self._max_k in sim_cache
-            else _run_sim(self._max_k)
-        )
-        sim_cache[self._max_k] = (post_cuf_max, soh_max, sim_max, tr_max)
-
-        if not _future_ok(self._max_k, soh_max, sim_max, tr_max):
-            warnings.warn(
-                f"Augmentation Year {event_year}: even max_k={self._max_k} cannot sustain "
-                f"CUF >= {hard_threshold_cuf:.4f}% through end of project. "
-                f"A future augmentation event will be needed.",
-                stacklevel=4,
-            )
-            return self._max_k, post_cuf_max, sim_max
-
-        # Binary search: smallest k in [k_min1, max_k] that passes Gate 2.
-        lo, hi = k_min1, self._max_k
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if mid not in sim_cache:
-                sim_cache[mid] = _run_sim(mid)
-            pc_mid, soh_mid, sim_mid, tr_mid = sim_cache[mid]
-            if _future_ok(mid, soh_mid, sim_mid, tr_mid):
-                hi = mid
-            else:
-                lo = mid + 1
-
-        best_pc, best_soh, best_sim_final, _ = sim_cache[lo]
-        return lo, best_pc, best_sim_final
+        return k_min1, k_min1_cuf, k_min1_sim
