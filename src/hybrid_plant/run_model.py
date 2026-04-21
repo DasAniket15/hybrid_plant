@@ -991,7 +991,7 @@ if __name__ == "__main__":
         from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _cuf_fn, year1_busbar_mwh
         from hybrid_plant.data_loader import load_soh_curve, operating_value
         from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
-        from hybrid_plant.augmentation.oversize_optimizer import find_optimal_oversize
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
 
         # Guard: if solver chose bess_containers=0, augmentation has nothing to work with
         if baseline_result.best_params["bess_containers"] == 0:
@@ -1057,21 +1057,21 @@ if __name__ == "__main__":
                               + float(np.sum(_sim["discharge_pre"])))
                 baseline_cuf_ser.append(_cuf_fn(_busbar_yr, _ppa))
 
-            # ── Oversize sweep ────────────────────────────────────────────────
-            print("\n[Augmentation] Running oversize sweep (full mode) …")
-            os_result = find_optimal_oversize(
-                augmentation_engine  = aug_engine,
-                base_params          = baseline_result.best_params,
-                threshold_cuf        = trigger_threshold_cuf,
-                max_extra_containers = int(aug_cfg.get("max_oversize_containers", 500)),
-                patience             = int(aug_cfg.get("oversize_patience", 3)),
-                tolerance            = float(aug_cfg.get("oversize_npv_tolerance_rs", 1e3)),
+            # ── Augmentation solver (Optuna TPE) ─────────────────────────────
+            n_trials = int(aug_cfg.get("solver", {}).get("n_trials", 100))
+            print(f"\n[Augmentation] Running augmentation solver ({n_trials} trials) …")
+            aug_solver = AugmentationSolver(
+                augmentation_engine = aug_engine,
+                base_params         = baseline_result.best_params,
+                baseline_cuf        = trigger_threshold_cuf,
+                config              = config,
             )
-            print(f"  [Aug] Oversize sweep done: best_extra={os_result.best_extra}  "
+            os_result = aug_solver.solve()
+            print(f"  [Aug] Solver done: best_extra={os_result.best_extra}  "
                   f"initial={os_result.best_initial_containers}  "
-                  f"candidates={len(os_result.sweep_log)}")
+                  f"trials={os_result.n_trials_completed}")
 
-            # Merge best-oversize finance into baseline_result for dashboard
+            # Merge best result into baseline_result for dashboard
             baseline_result.full_result["finance"] = os_result.best_result["finance"]
             baseline_result.full_result["year1"]   = os_result.best_result["year1"]
             aug_data = os_result.best_result["finance"]["augmentation"]

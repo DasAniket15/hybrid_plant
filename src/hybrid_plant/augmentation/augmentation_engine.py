@@ -105,9 +105,10 @@ class AugmentationEngine:
 
     def evaluate_scenario(
         self,
-        params:             dict[str, Any],
-        initial_containers: int | None = None,
-        fast_mode:          bool = False,
+        params:              dict[str, Any],
+        initial_containers:  int | None = None,
+        fast_mode:           bool = False,
+        max_events_override: int | None = None,
     ) -> dict[str, Any]:
         """
         Run the augmentation lifecycle for one scenario and return a finance
@@ -123,6 +124,9 @@ class AugmentationEngine:
                              params is never mutated.  Default None → use
                              params["bess_containers"].
         fast_mode          : passed through to LifecycleSimulator
+        max_events_override: passed through to LifecycleSimulator; overrides
+                             config max_augmentation_events (0 = no events,
+                             large int = unlimited).
 
         Returns
         -------
@@ -165,6 +169,7 @@ class AugmentationEngine:
             initial_containers      = initial_containers,
             trigger_threshold_cuf   = self._threshold,
             fast_mode               = fast_mode,
+            max_events_override     = max_events_override,
         )
 
         # ── Step 3: Build combined OPEX augmentation series ────────────────

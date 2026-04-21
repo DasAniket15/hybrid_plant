@@ -176,6 +176,7 @@ class LifecycleSimulator:
         initial_containers:    int,
         trigger_threshold_cuf: float,
         fast_mode:             bool = False,
+        max_events_override:   int | None = None,
     ) -> LifecycleResult:
         """
         Run the full 25-year augmentation lifecycle for one scenario.
@@ -188,6 +189,9 @@ class LifecycleSimulator:
                                  Augmentation fires when CUF drops below this.
                                  k-search restores CUF back to this level.
         fast_mode              : True → approximate; False → full re-sim each year
+        max_events_override    : When provided, overrides the config max_augmentation_events.
+                                 Pass 0 to suppress all events (CUF constraint feasibility
+                                 check), or a large int for effectively unlimited events.
 
         Returns
         -------
@@ -198,6 +202,7 @@ class LifecycleSimulator:
         container_size  = self._container_size
         ppa_mw          = float(params["ppa_capacity_mw"])
         eps             = self._trigger_tol_pp
+        max_events      = max_events_override if max_events_override is not None else self._max_events
 
         # Accumulators
         solar_arr   = np.zeros(project_life)
@@ -213,6 +218,7 @@ class LifecycleSimulator:
         opex_om   = [0.0] * project_life
 
         events_used = 0
+        # max_events resolved above (override or config value)
 
         # ── Year 1: always a full real simulation ──────────────────────────
         # New convention: operating value = 1.0 for year 1 (fresh plant).
@@ -294,7 +300,7 @@ class LifecycleSimulator:
             cuf_series.append(cuf_t)
 
             # ── Augmentation check ─────────────────────────────────────────
-            if cuf_t < (trigger_threshold_cuf - eps) and events_used < self._max_events:
+            if cuf_t < (trigger_threshold_cuf - eps) and events_used < max_events:
                 best_k, post_event_cuf, post_event_sim = self._find_best_k(
                     params, year, registry, solar_eff, wind_eff,
                     trigger_threshold_cuf, ppa_mw,

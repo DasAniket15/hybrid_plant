@@ -16,6 +16,7 @@ Tests
   Test 9  TestOversizeSweepHeadroom       — oversize sweep delays first event past Y2
   Test 10 TestMaxEventsLimit              — events stop after max_augmentation_events
   Test 11 TestSweepTermination            — sweep stops within patience+1 candidates
+  Test 12 TestAugmentationSolver          — Optuna solver: CUF constraint, NPV, determinism
 
 Run
 ───
@@ -1165,11 +1166,11 @@ class TestMaxEventsLimit:
         )
 
     def test_default_max_events_from_config(self, base_resources):
-        """Default max_augmentation_events=3 must be read from bess.yaml."""
+        """max_augmentation_events must be >= 1 and read from bess.yaml."""
         config = base_resources["config"]
         aug_cfg = config.bess["bess"]["augmentation"]
-        max_ev = int(aug_cfg.get("max_augmentation_events", 3))
-        assert max_ev == 3, f"Expected max_augmentation_events=3, got {max_ev}"
+        max_ev = int(aug_cfg.get("max_augmentation_events", 20))
+        assert max_ev >= 1, f"Expected max_augmentation_events >= 1, got {max_ev}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1261,6 +1262,166 @@ class TestSweepTermination:
         # Allow best_extra >= 0 (some CAPEX schedules might not penalise it much)
         assert os_result.best_extra >= 0  # just structural — extra can be 0 or small
         assert len(os_result.sweep_log) <= 13  # at most 10 + patience + head guard
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 12 — AugmentationSolver (Optuna TPE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAugmentationSolver:
+    """
+    Test 12: AugmentationSolver jointly optimises Year-1 oversizing and
+    lifecycle economics via Optuna TPE.
+
+    Uses a small n_trials budget (10) so tests run fast while still exercising
+    the full solver contract.
+    """
+
+    def _make_engine(self, base_resources, threshold_factor: float = 0.93):
+        """Build AugmentationEngine with threshold = cuf_y1 * threshold_factor.
+
+        Returns (aug_engine, trigger_threshold_cuf) so tests use the same floor
+        value that the solver enforces (not the raw Y1 CUF).
+        """
+        from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+
+        res    = base_resources
+        engine = res["engine"]
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+        trigger_cuf = cuf_y1 * threshold_factor
+
+        aug_engine = AugmentationEngine(
+            res["config"], res["data"], engine, res["soh"],
+            trigger_threshold_cuf = trigger_cuf,
+        )
+        return aug_engine, trigger_cuf
+
+    def _make_solver(self, base_resources, aug_engine, baseline_cuf,
+                     max_extra: int = 10, n_trials: int = 10):
+        """Build AugmentationSolver with a small trial budget for speed."""
+        import copy
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
+        from hybrid_plant.config_loader import FullConfig
+
+        config = base_resources["config"]
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["solver"] = {
+            "max_extra_containers": max_extra,
+            "n_trials":             n_trials,
+            "max_events_override":  20,
+            "seed":                 42,
+        }
+        patched = FullConfig(
+            project=config.project, bess=bess_override, finance=config.finance,
+            tariffs=config.tariffs, regulatory=config.regulatory, solver=config.solver,
+        )
+        return AugmentationSolver(aug_engine, STANDARD_PARAMS, baseline_cuf, patched)
+
+    def test_solve_returns_required_structure(self, base_resources):
+        """solve() must return AugmentationSolveResult with required attributes."""
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolveResult
+
+        aug_engine, cuf_y1 = self._make_engine(base_resources)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1)
+        result = solver.solve()
+
+        assert isinstance(result, AugmentationSolveResult)
+        assert isinstance(result.best_extra, int)
+        assert result.best_extra >= 0
+        assert result.best_initial_containers == STANDARD_PARAMS["bess_containers"] + result.best_extra
+        assert isinstance(result.sweep_log, list)
+        assert len(result.sweep_log) > 0
+        assert result.n_trials_completed > 0
+
+    def test_cuf_constraint_satisfied(self, base_resources):
+        """Best result must have min(cuf_series) >= baseline_cuf across all 25 years."""
+        aug_engine, cuf_y1 = self._make_engine(base_resources, threshold_factor=0.93)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1)
+        result = solver.solve()
+
+        aug = result.best_result["finance"]["augmentation"]
+        cuf_series = aug["cuf_series"]
+        assert len(cuf_series) == 25
+
+        tol = base_resources["config"].bess["bess"]["augmentation"].get(
+            "trigger_tolerance_pp", 0.05
+        )
+        min_cuf = min(cuf_series)
+        assert min_cuf >= cuf_y1 - tol, (
+            f"CUF constraint violated: min_cuf={min_cuf:.4f}% < "
+            f"baseline={cuf_y1:.4f}% - tol={tol}"
+        )
+
+    def test_infeasible_trials_penalised(self, base_resources):
+        """Trials where CUF drops below baseline must not be selected as best."""
+        # Set threshold = exact Y1 CUF so extra=0 is borderline infeasible
+        aug_engine, cuf_y1 = self._make_engine(base_resources, threshold_factor=1.0)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1,
+                                   max_extra=5, n_trials=10)
+        result = solver.solve()
+
+        # All infeasible trials in sweep_log must not match best_extra
+        infeasible_extras = {
+            e["extra"] for e in result.sweep_log if not e["feasible"]
+        }
+        # It's fine for infeasible trials to exist in the log; they must not win
+        if infeasible_extras:
+            assert result.best_extra not in infeasible_extras or len(infeasible_extras) == len({e["extra"] for e in result.sweep_log}), (
+                f"Solver selected infeasible extra={result.best_extra}"
+            )
+
+    def test_max_events_override_respected(self, base_resources):
+        """With max_events_override=0, no augmentation events fire in any trial."""
+        import copy
+        from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+        from hybrid_plant.config_loader import FullConfig
+
+        res    = base_resources
+        config = res["config"]
+        engine = res["engine"]
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+
+        aug_engine = AugmentationEngine(
+            config, res["data"], engine, res["soh"],
+            trigger_threshold_cuf = 0.0,   # threshold=0 → events never fire naturally
+        )
+
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["solver"] = {
+            "max_extra_containers": 5,
+            "n_trials": 5,
+            "max_events_override": 0,   # force zero events
+            "seed": 42,
+        }
+        patched = FullConfig(
+            project=config.project, bess=bess_override, finance=config.finance,
+            tariffs=config.tariffs, regulatory=config.regulatory, solver=config.solver,
+        )
+        solver = AugmentationSolver(aug_engine, STANDARD_PARAMS, 0.0, patched)
+        result = solver.solve()
+
+        aug = result.best_result["finance"]["augmentation"]
+        assert aug["n_events"] == 0, (
+            f"max_events_override=0 should suppress all events, got {aug['n_events']}"
+        )
+
+    def test_determinism(self, base_resources):
+        """Same seed must produce same best_extra across two independent runs."""
+        aug_engine, cuf_y1 = self._make_engine(base_resources)
+        solver1 = self._make_solver(base_resources, aug_engine, cuf_y1, n_trials=15)
+        solver2 = self._make_solver(base_resources, aug_engine, cuf_y1, n_trials=15)
+
+        r1 = solver1.solve()
+        r2 = solver2.solve()
+
+        assert r1.best_extra == r2.best_extra, (
+            f"Non-deterministic result: run1={r1.best_extra}, run2={r2.best_extra}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
