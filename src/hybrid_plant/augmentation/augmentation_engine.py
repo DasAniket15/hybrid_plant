@@ -109,6 +109,7 @@ class AugmentationEngine:
         initial_containers:  int | None = None,
         fast_mode:           bool = False,
         max_events_override: int | None = None,
+        cuf_buffer_pp:       float = 0.0,
     ) -> dict[str, Any]:
         """
         Run the augmentation lifecycle for one scenario and return a finance
@@ -170,6 +171,7 @@ class AugmentationEngine:
             trigger_threshold_cuf   = self._threshold,
             fast_mode               = fast_mode,
             max_events_override     = max_events_override,
+            cuf_buffer_pp           = cuf_buffer_pp,
         )
 
         # ── Step 3: Build combined OPEX augmentation series ────────────────

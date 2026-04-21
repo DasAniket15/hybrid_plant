@@ -176,6 +176,7 @@ class LifecycleSimulator:
         trigger_threshold_cuf: float,
         fast_mode:             bool = False,
         max_events_override:   int | None = None,
+        cuf_buffer_pp:         float = 0.0,
     ) -> LifecycleResult:
         """
         Run the full 25-year augmentation lifecycle for one scenario.
@@ -303,6 +304,7 @@ class LifecycleSimulator:
                 best_k, post_event_cuf, post_event_sim = self._find_best_k(
                     params, year, registry, solar_eff, wind_eff,
                     trigger_threshold_cuf, ppa_mw,
+                    cuf_buffer_pp=cuf_buffer_pp,
                 )
 
                 # Register the event cohort and account for costs
@@ -382,23 +384,21 @@ class LifecycleSimulator:
         wind_eff:             float,
         hard_threshold_cuf:   float,
         ppa_mw:               float,
+        cuf_buffer_pp:        float = 0.0,
     ) -> tuple[int, float, dict | None]:
         """
-        Find the **minimum** k in [min_k, max_k] such that post-event CUF at
-        event_year >= hard_threshold_cuf (Gate 1 — full plant simulation).
+        Find the minimum k in [min_k, max_k] such that post-event CUF at
+        event_year >= hard_threshold_cuf + cuf_buffer_pp (Gate 1).
 
-        Strategy
-        ────────
-        Linear scan k = min_k … max_k, running a full plant.simulate() per k.
-        Stop at the first k that passes Gate 1.  Future CUF drops are handled
-        by subsequent augmentation events; the lifecycle simulator allows up to
-        max_augmentation_events total.
+        cuf_buffer_pp == 0.0 preserves legacy behaviour exactly.
 
         Returns
         -------
         (best_k, post_event_cuf_with_best_k, post_event_sim_dict)
         """
         container_size = self._container_size
+        # k-search targets threshold + buffer; buffer=0 is legacy behaviour
+        target_cuf = hard_threshold_cuf + cuf_buffer_pp
 
         def _build_registry(k: int) -> CohortRegistry:
             tr = CohortRegistry(registry.cohorts[0].containers)
@@ -440,17 +440,19 @@ class LifecycleSimulator:
             post_cuf, _soh, sim, _tr = _run_sim(k)
             if post_cuf > best_cuf_g1:
                 best_k_g1, best_cuf_g1, best_sim_g1 = k, post_cuf, sim
-            if post_cuf >= hard_threshold_cuf - 1e-9:
+            if post_cuf >= target_cuf - 1e-9:
                 k_min1, k_min1_cuf, k_min1_sim = k, post_cuf, sim
                 break
 
         if k_min1 is None:
             warnings.warn(
                 f"Augmentation Year {event_year}: k-search exhausted max_k={self._max_k} "
-                f"without reaching hard threshold {hard_threshold_cuf:.4f}% at the event year. "
+                f"without reaching target CUF {target_cuf:.4f}% "
+                f"(hard_threshold={hard_threshold_cuf:.4f}%, buffer={cuf_buffer_pp:.2f}pp). "
                 f"Best post-event CUF was {best_cuf_g1:.4f}%. "
                 f"Returning k={best_k_g1} (best found). "
-                f"Consider raising max_augmentation_containers_per_event in bess.yaml.",
+                f"Consider raising max_augmentation_containers_per_event or "
+                f"reducing cuf_buffer_pp_max in bess.yaml.",
                 stacklevel=4,
             )
             return best_k_g1, best_cuf_g1, best_sim_g1

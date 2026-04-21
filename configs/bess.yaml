@@ -45,6 +45,16 @@ bess:
       max_events_override: 20      # effectively-unlimited event ceiling per lifecycle
       seed: 42                     # reproducibility
 
+      # cuf_buffer_pp search bounds — Optuna explores this range per trial.
+      # Each event targets hard_threshold + cuf_buffer_pp, giving headroom
+      # before the next trigger.  With ~0.2 pp/yr degradation, buffer=1.4 ≈ 7 yrs.
+      cuf_buffer_pp_min: 0.0
+      cuf_buffer_pp_max: 3.0
+
+      # NPV penalty per augmentation event.
+      # Nudges Optuna toward upfront oversizing over many small events.
+      event_penalty_rs_per_event: 5_000_000   # 0.5 Cr per event
+
     # ── Per-event payback filter ─────────────────────────────────────────────
     # Before committing an augmentation event, test whether its NPV is positive
     # given the remaining project life.  Events that fail are skipped and logged.
