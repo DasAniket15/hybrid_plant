@@ -33,13 +33,17 @@ bess:
     #            without reaching the restoration target.  NOT a target itself.
     minimum_augmentation_containers: 1
     max_augmentation_containers_per_event: 50   # safety cap; emits warning if hit
+    max_augmentation_events: 20                 # high ceiling; AugmentationSolver overrides via max_events_override
 
-    # ── Oversize sweep (post-processing, single-pass) ────────────────────────
-    # After Pass-1 solver selects B* containers, a sweep tries B* + extra for
-    # extra = 0, 1, 2, … and picks the candidate that maximises savings_npv.
-    max_oversize_containers: 500       # hard cap on `extra`; safety stop if sweep diverges
-    oversize_patience: 3               # consecutive non-improving steps → stop early
-    oversize_npv_tolerance_rs: 1000    # Rs; improvement below this is treated as "no change"
+    # ── Augmentation solver (Optuna TPE, replaces oversize sweep) ───────────
+    # AugmentationSolver jointly optimises Year-1 oversizing and lifecycle
+    # economics.  Decision variable: extra ∈ [0, max_extra_containers].
+    # Hard constraint: CUF must never drop below Pass-1 baseline CUF.
+    solver:
+      max_extra_containers: 200    # upper bound for Optuna integer search
+      n_trials: 100                # Optuna trial budget
+      max_events_override: 20      # effectively-unlimited event ceiling per lifecycle
+      seed: 42                     # reproducibility
 
     # ── Per-event payback filter ─────────────────────────────────────────────
     # Before committing an augmentation event, test whether its NPV is positive
@@ -47,7 +51,7 @@ bess:
     # proxy_rate = (discom_tariff_y1 − pass1_lcoe) × 1000  [Rs per MWh]
     # Uses Y1 values; does not project tariff escalation (first-order screen).
     payback_filter:
-      enabled: true
+      enabled: false
 
   salvage:
     enabled: true

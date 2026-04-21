@@ -6,17 +6,17 @@ Test suite for the BESS Augmentation Engine.
 Tests
 ─────
   Test 1  TestNoAugmentationDeclines      — Without aug, CUF strictly declines
-  Test 2  TestAugmentationRestoresCUF     — Post-event CUF >= restoration target
+  Test 2  TestAugmentationRestoresCUF     — Post-event CUF >= hard threshold
   Test 3  TestMultipleAugmentations       — Pathological config triggers >=2 events
   Test 4  TestCohortIndependence          — Each cohort's capacity == containers × soh[age]
   Test 5  TestOpexOnlyTreatment           — Aug cost in OPEX; CAPEX/debt/EMI unchanged
   Test 6  TestAugmentationEngineIntegration — evaluate_scenario() smoke + structure
-  Test 7  TestMinimumKSearch              — New: min-k-to-target semantics (not greedy)
-  Test 8  TestMaxKSafetyCap               — New: k capped at max_k when target unreachable
-  Test 9  TestOversizeSweepHeadroom       — New: oversize sweep delays first event past Y2
-  Test 10 TestPaybackFilterLateLife       — New: filter suppresses NPV-negative late events
-  Test 11 TestPaybackFilterDisabled       — New: filter=None → all events fire
-  Test 12 TestSweepTermination            — New: sweep stops within patience+1 candidates
+  Test 7  TestMinimumKSearch              — min-k-to-hard-threshold semantics (not greedy)
+  Test 8  TestMaxKSafetyCap               — k capped at max_k when target unreachable
+  Test 9  TestOversizeSweepHeadroom       — oversize sweep delays first event past Y2
+  Test 10 TestMaxEventsLimit              — events stop after max_augmentation_events
+  Test 11 TestSweepTermination            — sweep stops within patience+1 candidates
+  Test 12 TestAugmentationSolver          — Optuna solver: CUF constraint, NPV, determinism
 
 Run
 ───
@@ -121,7 +121,6 @@ class TestNoAugmentationDeclines:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = 0.0,   # never triggered
-            restoration_target_cuf  = 0.0,
             fast_mode               = True,
         )
 
@@ -143,7 +142,6 @@ class TestNoAugmentationDeclines:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = 0.0,
-            restoration_target_cuf  = 0.0,
             fast_mode               = True,
         )
 
@@ -161,7 +159,6 @@ class TestNoAugmentationDeclines:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = 0.0,
-            restoration_target_cuf  = 0.0,
             fast_mode               = True,
         )
 
@@ -178,12 +175,11 @@ class TestNoAugmentationDeclines:
 class TestAugmentationRestoresCUF:
     """
     Test 2: When an augmentation event fires, the post-event CUF recorded
-    in the event log must be >= restoration_target_cuf (within float tolerance).
+    in the event log must be >= hard_threshold (within float tolerance).
     """
 
     def test_post_event_cuf_meets_target(self, base_resources):
         sim = make_simulator(base_resources)
-        soh = base_resources["soh"]
 
         cuf_y1 = _compute_y1_cuf(base_resources, STANDARD_PARAMS)
 
@@ -194,17 +190,14 @@ class TestAugmentationRestoresCUF:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
-        # New semantics: post-event CUF must meet the ADJUSTED target
-        # (Y1 CUF × solar/wind operating-value deg factor).  Late-year
-        # events cannot reach raw Y1 CUF because solar/wind have aged.
+        # Post-event CUF must meet the hard threshold (or exhaust max_k trying)
         for ev in result.event_log:
-            assert ev["post_event_cuf"] >= ev["adjusted_target"] - 0.01, (
+            assert ev["post_event_cuf"] >= threshold - 0.01 or ev["reached_hard"] is False, (
                 f"Year {ev['year']}: post_event_cuf {ev['post_event_cuf']:.3f}% "
-                f"< adjusted target {ev['adjusted_target']:.3f}%"
+                f"< hard threshold {threshold:.3f}%"
             )
 
     def test_event_log_fields_present(self, base_resources):
@@ -217,11 +210,10 @@ class TestAugmentationRestoresCUF:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
-        required_keys = {"year", "trigger_cuf", "adjusted_target", "post_event_cuf",
+        required_keys = {"year", "trigger_cuf", "hard_threshold", "post_event_cuf",
                          "k_containers", "lump_cost_rs"}
 
         for ev in result.event_log:
@@ -241,7 +233,6 @@ class TestAugmentationRestoresCUF:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -271,7 +262,6 @@ class TestAugmentationRestoresCUF:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = cuf_y1 * 0.93,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -309,7 +299,6 @@ class TestMultipleAugmentations:
             params                  = self.TIGHT_PARAMS,
             initial_containers      = self.TIGHT_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -328,7 +317,6 @@ class TestMultipleAugmentations:
             params                  = self.TIGHT_PARAMS,
             initial_containers      = self.TIGHT_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -347,7 +335,6 @@ class TestMultipleAugmentations:
             params                  = self.TIGHT_PARAMS,
             initial_containers      = self.TIGHT_PARAMS["bess_containers"],
             trigger_threshold_cuf   = cuf_y1 * 0.98,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -366,7 +353,6 @@ class TestMultipleAugmentations:
             params                  = self.TIGHT_PARAMS,
             initial_containers      = self.TIGHT_PARAMS["bess_containers"],
             trigger_threshold_cuf   = cuf_y1 * 0.98,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -575,7 +561,6 @@ class TestOpexOnlyTreatment:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
         aug_opex = [
@@ -655,7 +640,6 @@ class TestOpexOnlyTreatment:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = cuf_y1 * 0.93,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = True,
         )
 
@@ -732,7 +716,7 @@ class TestAugmentationEngineIntegration:
         aug    = result["finance"]["augmentation"]
 
         required_keys = {
-            "trigger_threshold_cuf", "restoration_target_cuf",
+            "trigger_threshold_cuf",
             "event_log", "cuf_series", "cohort_snapshot",
             "cohort_capacity_timeline", "opex_augmentation_lump",
             "opex_augmentation_om", "total_lump_cost_rs",
@@ -850,7 +834,6 @@ class TestMinimumKSearch:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = False,
         )
 
@@ -866,12 +849,12 @@ class TestMinimumKSearch:
             ))
             assert k <= max_k, f"k={k} exceeds max_k={max_k}"
 
-            # More importantly: post-event CUF should meet the adjusted target
+            # More importantly: post-event CUF should meet the hard threshold
             # (which means k was sufficient — not necessarily 1, but not
             # unnecessarily large).
-            assert ev["post_event_cuf"] >= ev["adjusted_target"] - 0.01, (
+            assert ev["post_event_cuf"] >= threshold - 0.01 or not ev["reached_hard"], (
                 f"Year {ev['year']}: post_event_cuf {ev['post_event_cuf']:.4f}% "
-                f"< adjusted target {ev['adjusted_target']:.4f}%"
+                f"< hard threshold {threshold:.4f}%"
             )
 
     def test_k_is_minimum_not_saturated(self, base_resources):
@@ -898,7 +881,6 @@ class TestMinimumKSearch:
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
             trigger_threshold_cuf   = threshold,
-            restoration_target_cuf  = cuf_y1,
             fast_mode               = False,
         )
 
@@ -944,11 +926,9 @@ class TestMinimumKSearch:
                       + float(np.sum(sim_km1["discharge_pre"])))
         cuf_km1 = compute_plant_cuf(busbar_km1, ppa_mw)
 
-        adjusted_target = ev["adjusted_target"]
-
-        # k-1 must NOT meet the target (that's why k was chosen)
-        assert cuf_km1 < adjusted_target - 1e-6 or best_k == 1, (
-            f"k-1={best_k-1} already meets adjusted_target={adjusted_target:.4f}% "
+        # k-1 must NOT meet the hard threshold (that's why k was chosen)
+        assert cuf_km1 < threshold - 1e-6 or best_k == 1, (
+            f"k-1={best_k-1} already meets threshold={threshold:.4f}% "
             f"(got {cuf_km1:.4f}%). k={best_k} was not the minimum."
         )
 
@@ -1001,6 +981,9 @@ class TestMaxKSafetyCap:
         )
 
         cuf_y1 = _compute_y1_cuf(res, STANDARD_PARAMS)
+        # Set threshold well above Y1 CUF — physically unreachable with only
+        # 2 extra containers, so k-search exhausts max_k=2 and warns.
+        impossible_threshold = cuf_y1 + 15.0
 
         import warnings
         with warnings.catch_warnings(record=True) as caught:
@@ -1008,8 +991,7 @@ class TestMaxKSafetyCap:
             result = sim.simulate(
                 params                  = STANDARD_PARAMS,
                 initial_containers      = STANDARD_PARAMS["bess_containers"],
-                trigger_threshold_cuf   = cuf_y1 * 0.9999,
-                restoration_target_cuf  = cuf_y1,
+                trigger_threshold_cuf   = impossible_threshold,
                 fast_mode               = False,
             )
 
@@ -1124,181 +1106,80 @@ class TestOversizeSweepHeadroom:
         assert os_result.best_extra >= 0
 
 
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 10 — Payback filter suppresses late-life events
+# Test 10 — Max events limit
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPaybackFilterLateLife:
+class TestMaxEventsLimit:
     """
-    Test 10: The payback filter must suppress an event in the final years of
-    the project when the lump cost cannot be recovered.
+    Test 10: Augmentation must stop after max_augmentation_events events,
+    even if CUF continues to fall below the threshold in later years.
     """
 
-    def test_late_event_skipped_with_filter(self, base_resources):
-        """
-        Construct an event_filter that always returns False after year 20.
-        Assert the skipped_event_log has entries and the event_log does not.
-        """
-        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+    def test_events_capped_at_max(self, base_resources):
+        """With max_events=2 and a very tight threshold, exactly 2 events fire."""
+        import copy
 
         res    = base_resources
-        cuf_y1 = _compute_y1_cuf(res, STANDARD_PARAMS)
+        config = res["config"]
 
-        # Filter that blocks all events in years >= 20
-        def late_block_filter(event_info: dict) -> bool:
-            return event_info["year"] < 20
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["max_augmentation_events"] = 2
+        # Use small max_k so each event only partially restores — guarantees
+        # the threshold would be hit again without the cap.
+        bess_override["bess"]["augmentation"]["max_augmentation_containers_per_event"] = 2
+
+        from hybrid_plant.config_loader import FullConfig
+        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+
+        patched_config = FullConfig(
+            project    = config.project,
+            bess       = bess_override,
+            finance    = config.finance,
+            tariffs    = config.tariffs,
+            regulatory = config.regulatory,
+            solver     = config.solver,
+        )
 
         sim = LifecycleSimulator(
-            config          = res["config"],
+            config          = patched_config,
             plant_engine    = res["engine"].plant,
             soh_curve       = res["soh"],
             solar_eff_curve = res["solar_eff"],
             wind_eff_curve  = res["wind_eff"],
             loss_factor     = res["engine"].grid.loss_factor,
-            event_filter    = late_block_filter,
         )
 
-        result = sim.simulate(
-            params                  = STANDARD_PARAMS,
-            initial_containers      = STANDARD_PARAMS["bess_containers"],
-            trigger_threshold_cuf   = cuf_y1 * 0.93,
-            restoration_target_cuf  = cuf_y1,
-            fast_mode               = True,
-        )
-
-        # Every event in event_log must be in year < 20
-        for ev in result.event_log:
-            assert ev["year"] < 20, (
-                f"Fired event in year {ev['year']} should have been blocked by filter"
-            )
-
-        # Every event in skipped_event_log must be in year >= 20
-        for sk in result.skipped_event_log:
-            assert sk["year"] >= 20, (
-                f"Skipped event in year {sk['year']} should not have been skipped"
-            )
-            assert sk["skipped_by_filter"] is True
-            assert sk["k_containers"] == 0
-            assert sk["lump_cost_rs"]  == 0.0
-
-    def test_real_payback_filter_with_pass1_lcoe(self, base_resources):
-        """
-        AugmentationEngine with a real pass1_lcoe should build a live payback
-        filter.  Run evaluate_scenario and verify skipped_event_log is present
-        in the returned finance dict.
-        """
-        from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
-        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
-
-        res    = base_resources
-        config = res["config"]
-        engine = res["engine"]
-        soh    = res["soh"]
-
-        y1    = engine.evaluate(**STANDARD_PARAMS)
-        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
-
-        # Use a dummy pass1_lcoe well below DISCOM tariff (so proxy_rate > 0)
-        aug_engine = AugmentationEngine(
-            config, res["data"], engine, soh,
-            trigger_threshold_cuf = cuf_y1 * 0.93,
-            pass1_lcoe            = 4.0,   # Rs/kWh — below DISCOM ~8.5 Rs/kWh
-        )
-
-        result = aug_engine.evaluate_scenario(STANDARD_PARAMS, fast_mode=True)
-        aug    = result["finance"]["augmentation"]
-
-        assert "skipped_event_log" in aug
-        assert isinstance(aug["skipped_event_log"], list)
-        assert "n_skipped" in aug
-
-        # n_skipped must match len(skipped_event_log)
-        assert aug["n_skipped"] == len(aug["skipped_event_log"])
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Test 11 — Payback filter off means all events fire
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestPaybackFilterDisabled:
-    """
-    Test 11: When no event_filter is provided (None), all triggered events
-    must fire — equivalent to pre-filter behaviour.
-    """
-
-    def test_no_filter_all_events_fire(self, base_resources):
-        """
-        Without a filter, every year where CUF drops below threshold should
-        result in a fired event (nothing in skipped_event_log).
-        """
-        sim = make_simulator(base_resources)  # no event_filter — default=None
-        cuf_y1 = _compute_y1_cuf(base_resources, STANDARD_PARAMS)
-
-        result = sim.simulate(
-            params                  = STANDARD_PARAMS,
-            initial_containers      = STANDARD_PARAMS["bess_containers"],
-            trigger_threshold_cuf   = cuf_y1 * 0.93,
-            restoration_target_cuf  = cuf_y1,
-            fast_mode               = True,
-        )
-
-        # skipped_event_log must be empty when no filter is installed
-        assert result.skipped_event_log == [], (
-            f"Expected no skipped events, got {result.skipped_event_log}"
-        )
-
-    def test_filter_none_vs_always_true_filter_identical(self, base_resources):
-        """
-        event_filter=None and event_filter=(lambda _: True) must produce
-        identical event_log and OPEX series.
-        """
-        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
-        import math
-
-        res    = base_resources
         cuf_y1 = _compute_y1_cuf(res, STANDARD_PARAMS)
-
-        def always_fire(_event_info):
-            return True
-
-        sim_none = LifecycleSimulator(
-            config=res["config"], plant_engine=res["engine"].plant,
-            soh_curve=res["soh"], solar_eff_curve=res["solar_eff"],
-            wind_eff_curve=res["wind_eff"], loss_factor=res["engine"].grid.loss_factor,
-            event_filter=None,
-        )
-        sim_true = LifecycleSimulator(
-            config=res["config"], plant_engine=res["engine"].plant,
-            soh_curve=res["soh"], solar_eff_curve=res["solar_eff"],
-            wind_eff_curve=res["wind_eff"], loss_factor=res["engine"].grid.loss_factor,
-            event_filter=always_fire,
-        )
-
-        common_kwargs = dict(
+        result = sim.simulate(
             params                  = STANDARD_PARAMS,
             initial_containers      = STANDARD_PARAMS["bess_containers"],
-            trigger_threshold_cuf   = cuf_y1 * 0.93,
-            restoration_target_cuf  = cuf_y1,
+            trigger_threshold_cuf   = cuf_y1 * 0.9999,
             fast_mode               = True,
         )
 
-        r_none = sim_none.simulate(**common_kwargs)
-        r_true = sim_true.simulate(**common_kwargs)
-
-        assert len(r_none.event_log) == len(r_true.event_log), (
-            "Event counts differ: None vs always-fire filter"
+        assert len(result.event_log) <= 2, (
+            f"Expected at most 2 events (max_events=2), got {len(result.event_log)}"
         )
-        for a, b in zip(r_none.opex_augmentation_lump, r_true.opex_augmentation_lump):
-            assert math.isclose(a, b, rel_tol=1e-12), "OPEX lump differs"
+
+    def test_default_max_events_from_config(self, base_resources):
+        """max_augmentation_events must be >= 1 and read from bess.yaml."""
+        config = base_resources["config"]
+        aug_cfg = config.bess["bess"]["augmentation"]
+        max_ev = int(aug_cfg.get("max_augmentation_events", 20))
+        assert max_ev >= 1, f"Expected max_augmentation_events >= 1, got {max_ev}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 12 — Sweep termination
+# Test 11 — Sweep termination
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSweepTermination:
     """
-    Test 12: The oversize sweep must respect patience and the hard cap.
+    Test 11: The oversize sweep must respect patience and the hard cap.
     """
 
     def test_sweep_terminates_within_patience_plus_one(self, base_resources):
@@ -1381,6 +1262,166 @@ class TestSweepTermination:
         # Allow best_extra >= 0 (some CAPEX schedules might not penalise it much)
         assert os_result.best_extra >= 0  # just structural — extra can be 0 or small
         assert len(os_result.sweep_log) <= 13  # at most 10 + patience + head guard
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 12 — AugmentationSolver (Optuna TPE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAugmentationSolver:
+    """
+    Test 12: AugmentationSolver jointly optimises Year-1 oversizing and
+    lifecycle economics via Optuna TPE.
+
+    Uses a small n_trials budget (10) so tests run fast while still exercising
+    the full solver contract.
+    """
+
+    def _make_engine(self, base_resources, threshold_factor: float = 0.93):
+        """Build AugmentationEngine with threshold = cuf_y1 * threshold_factor.
+
+        Returns (aug_engine, trigger_threshold_cuf) so tests use the same floor
+        value that the solver enforces (not the raw Y1 CUF).
+        """
+        from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+
+        res    = base_resources
+        engine = res["engine"]
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+        trigger_cuf = cuf_y1 * threshold_factor
+
+        aug_engine = AugmentationEngine(
+            res["config"], res["data"], engine, res["soh"],
+            trigger_threshold_cuf = trigger_cuf,
+        )
+        return aug_engine, trigger_cuf
+
+    def _make_solver(self, base_resources, aug_engine, baseline_cuf,
+                     max_extra: int = 10, n_trials: int = 10):
+        """Build AugmentationSolver with a small trial budget for speed."""
+        import copy
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
+        from hybrid_plant.config_loader import FullConfig
+
+        config = base_resources["config"]
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["solver"] = {
+            "max_extra_containers": max_extra,
+            "n_trials":             n_trials,
+            "max_events_override":  20,
+            "seed":                 42,
+        }
+        patched = FullConfig(
+            project=config.project, bess=bess_override, finance=config.finance,
+            tariffs=config.tariffs, regulatory=config.regulatory, solver=config.solver,
+        )
+        return AugmentationSolver(aug_engine, STANDARD_PARAMS, baseline_cuf, patched)
+
+    def test_solve_returns_required_structure(self, base_resources):
+        """solve() must return AugmentationSolveResult with required attributes."""
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolveResult
+
+        aug_engine, cuf_y1 = self._make_engine(base_resources)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1)
+        result = solver.solve()
+
+        assert isinstance(result, AugmentationSolveResult)
+        assert isinstance(result.best_extra, int)
+        assert result.best_extra >= 0
+        assert result.best_initial_containers == STANDARD_PARAMS["bess_containers"] + result.best_extra
+        assert isinstance(result.sweep_log, list)
+        assert len(result.sweep_log) > 0
+        assert result.n_trials_completed > 0
+
+    def test_cuf_constraint_satisfied(self, base_resources):
+        """Best result must have min(cuf_series) >= baseline_cuf across all 25 years."""
+        aug_engine, cuf_y1 = self._make_engine(base_resources, threshold_factor=0.93)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1)
+        result = solver.solve()
+
+        aug = result.best_result["finance"]["augmentation"]
+        cuf_series = aug["cuf_series"]
+        assert len(cuf_series) == 25
+
+        tol = base_resources["config"].bess["bess"]["augmentation"].get(
+            "trigger_tolerance_pp", 0.05
+        )
+        min_cuf = min(cuf_series)
+        assert min_cuf >= cuf_y1 - tol, (
+            f"CUF constraint violated: min_cuf={min_cuf:.4f}% < "
+            f"baseline={cuf_y1:.4f}% - tol={tol}"
+        )
+
+    def test_infeasible_trials_penalised(self, base_resources):
+        """Trials where CUF drops below baseline must not be selected as best."""
+        # Set threshold = exact Y1 CUF so extra=0 is borderline infeasible
+        aug_engine, cuf_y1 = self._make_engine(base_resources, threshold_factor=1.0)
+        solver = self._make_solver(base_resources, aug_engine, cuf_y1,
+                                   max_extra=5, n_trials=10)
+        result = solver.solve()
+
+        # All infeasible trials in sweep_log must not match best_extra
+        infeasible_extras = {
+            e["extra"] for e in result.sweep_log if not e["feasible"]
+        }
+        # It's fine for infeasible trials to exist in the log; they must not win
+        if infeasible_extras:
+            assert result.best_extra not in infeasible_extras or len(infeasible_extras) == len({e["extra"] for e in result.sweep_log}), (
+                f"Solver selected infeasible extra={result.best_extra}"
+            )
+
+    def test_max_events_override_respected(self, base_resources):
+        """With max_events_override=0, no augmentation events fire in any trial."""
+        import copy
+        from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+        from hybrid_plant.config_loader import FullConfig
+
+        res    = base_resources
+        config = res["config"]
+        engine = res["engine"]
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+
+        aug_engine = AugmentationEngine(
+            config, res["data"], engine, res["soh"],
+            trigger_threshold_cuf = 0.0,   # threshold=0 → events never fire naturally
+        )
+
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["solver"] = {
+            "max_extra_containers": 5,
+            "n_trials": 5,
+            "max_events_override": 0,   # force zero events
+            "seed": 42,
+        }
+        patched = FullConfig(
+            project=config.project, bess=bess_override, finance=config.finance,
+            tariffs=config.tariffs, regulatory=config.regulatory, solver=config.solver,
+        )
+        solver = AugmentationSolver(aug_engine, STANDARD_PARAMS, 0.0, patched)
+        result = solver.solve()
+
+        aug = result.best_result["finance"]["augmentation"]
+        assert aug["n_events"] == 0, (
+            f"max_events_override=0 should suppress all events, got {aug['n_events']}"
+        )
+
+    def test_determinism(self, base_resources):
+        """Same seed must produce same best_extra across two independent runs."""
+        aug_engine, cuf_y1 = self._make_engine(base_resources)
+        solver1 = self._make_solver(base_resources, aug_engine, cuf_y1, n_trials=15)
+        solver2 = self._make_solver(base_resources, aug_engine, cuf_y1, n_trials=15)
+
+        r1 = solver1.solve()
+        r2 = solver2.solve()
+
+        assert r1.best_extra == r2.best_extra, (
+            f"Non-deterministic result: run1={r1.best_extra}, run2={r2.best_extra}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

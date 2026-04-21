@@ -414,7 +414,7 @@ try:
     )
     _lc_fast = _sim.simulate(
         params=_sim_params, initial_containers=30,
-        trigger_threshold_cuf=0.0, restoration_target_cuf=0.0,
+        trigger_threshold_cuf=0.0,
         fast_mode=True,
     )
     check("lifecycle simulator runs without exception (fast_mode)",
@@ -433,13 +433,12 @@ try:
     _lc_trig = _sim.simulate(
         params=_sim_params, initial_containers=30,
         trigger_threshold_cuf=_cuf_y1 * 0.93,
-        restoration_target_cuf=_cuf_y1,
         fast_mode=True,
     )
     check("lifecycle simulator runs without exception (triggered)",
           len(_lc_trig.cuf_series) == _life)
     check("event_log entries are well-formed",
-          all({"year","trigger_cuf","adjusted_target","post_event_cuf",
+          all({"year","trigger_cuf","hard_threshold","post_event_cuf",
                "k_containers","lump_cost_rs"}.issubset(ev.keys())
               for ev in _lc_trig.event_log),
           f"n_events={len(_lc_trig.event_log)}")
@@ -466,7 +465,6 @@ try:
     _aug_engine = AugmentationEngine(
         config, data, _eng, _soh,
         trigger_threshold_cuf = _cuf_y1 * 0.93,
-        pass1_lcoe            = None,    # no payback filter in smoke test
     )
     _aug_res = _aug_engine.evaluate_scenario(_sim_params, fast_mode=True)
     _aug_fi  = _aug_res["finance"]
@@ -475,19 +473,10 @@ try:
     check("savings_npv is finite",
           _math.isfinite(_aug_fi["savings_npv"]))
     check("augmentation sub-dict has all required keys",
-          {"trigger_threshold_cuf","restoration_target_cuf","event_log",
+          {"trigger_threshold_cuf","event_log",
            "cuf_series","cohort_snapshot","cohort_capacity_timeline",
            "total_lump_cost_rs","total_om_cost_rs","n_events"}.issubset(
               _aug_fi["augmentation"].keys()))
-    check("skipped_event_log key present in augmentation dict",
-          "skipped_event_log" in _aug_fi["augmentation"])
-    check("n_skipped key present in augmentation dict",
-          "n_skipped" in _aug_fi["augmentation"])
-    check("skipped_event_log is a list",
-          isinstance(_aug_fi["augmentation"]["skipped_event_log"], list))
-    check("n_skipped matches skipped_event_log length",
-          _aug_fi["augmentation"]["n_skipped"] ==
-          len(_aug_fi["augmentation"]["skipped_event_log"]))
 
     # ── initial_containers matches params["bess_containers"] (no-oversize path) ─
     check("initial_containers == bess_containers when no oversize",
@@ -524,23 +513,25 @@ try:
     check("find_optimal_oversize callable", callable(find_optimal_oversize))
     check("OversizeResult is a class", isinstance(OversizeResult, type))
 
-    # ── LifecycleResult.skipped_event_log field exists ──────────────────────
+    # ── LifecycleResult fields ───────────────────────────────────────────────
     from hybrid_plant.augmentation.lifecycle_simulator import LifecycleResult
     import dataclasses as _dc
     _lc_fields = {f.name for f in _dc.fields(LifecycleResult)}
-    check("LifecycleResult has skipped_event_log field",
-          "skipped_event_log" in _lc_fields)
+    check("LifecycleResult has cuf_series field",
+          "cuf_series" in _lc_fields)
+    check("LifecycleResult has no skipped_event_log field",
+          "skipped_event_log" not in _lc_fields)
 
-    # ── LifecycleSimulator accepts event_filter kwarg ───────────────────────
+    # ── LifecycleSimulator signature ─────────────────────────────────────────
     import inspect as _inspect
     _lc_sig = _inspect.signature(LifecycleSimulator.__init__)
-    check("LifecycleSimulator.__init__ has event_filter param",
-          "event_filter" in _lc_sig.parameters)
+    check("LifecycleSimulator.__init__ has no event_filter param",
+          "event_filter" not in _lc_sig.parameters)
 
-    # ── AugmentationEngine accepts pass1_lcoe kwarg ─────────────────────────
+    # ── AugmentationEngine signature ─────────────────────────────────────────
     _ae_sig = _inspect.signature(AugmentationEngine.__init__)
-    check("AugmentationEngine.__init__ has pass1_lcoe param",
-          "pass1_lcoe" in _ae_sig.parameters)
+    check("AugmentationEngine.__init__ has no pass1_lcoe param",
+          "pass1_lcoe" not in _ae_sig.parameters)
 
     # ── evaluate_scenario accepts initial_containers kwarg ──────────────────
     _es_sig = _inspect.signature(AugmentationEngine.evaluate_scenario)
@@ -558,42 +549,12 @@ try:
     check("SolverResult.augmentation_result field removed",
           "augmentation_result" not in _sr_fields)
 
-    # ── Minimum-k semantics: event_filter=None → skipped_event_log is empty ─
-    _sim_no_filter = LifecycleSimulator(
-        config=config, plant_engine=_eng.plant,
-        soh_curve=_soh, solar_eff_curve=_solar_eff,
-        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
-        event_filter=None,
-    )
-    _lc_no_filter = _sim_no_filter.simulate(
-        params=_sim_params, initial_containers=30,
-        trigger_threshold_cuf=_cuf_y1 * 0.93,
-        restoration_target_cuf=_cuf_y1,
-        fast_mode=True,
-    )
-    check("skipped_event_log empty when event_filter=None",
-          _lc_no_filter.skipped_event_log == [],
-          f"got {len(_lc_no_filter.skipped_event_log)} skipped")
-
-    # ── event_filter=block-all → all events skip, none fire ─────────────────
-    _sim_block = LifecycleSimulator(
-        config=config, plant_engine=_eng.plant,
-        soh_curve=_soh, solar_eff_curve=_solar_eff,
-        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
-        event_filter=lambda _: False,   # block everything
-    )
-    _lc_block = _sim_block.simulate(
-        params=_sim_params, initial_containers=30,
-        trigger_threshold_cuf=_cuf_y1 * 0.93,
-        restoration_target_cuf=_cuf_y1,
-        fast_mode=True,
-    )
-    check("event_log empty when event_filter blocks all",
-          _lc_block.event_log == [],
-          f"got {len(_lc_block.event_log)} fired")
-    _any_skipped = len(_lc_block.skipped_event_log) > 0 or len(_lc_no_filter.event_log) == 0
-    check("skipped_event_log non-empty when block-all filter active (if events exist)",
-          _any_skipped)
+    # ── max_events limit: events capped at max_augmentation_events ──────────
+    _aug_cfg = config.bess["bess"]["augmentation"]
+    check("bess.yaml has max_augmentation_events key",
+          "max_augmentation_events" in _aug_cfg)
+    check("max_augmentation_events == 3",
+          int(_aug_cfg.get("max_augmentation_events", 0)) == 3)
 
     # ── OversizeResult structure ─────────────────────────────────────────────
     _os_result_fields = {f.name for f in _dc.fields(OversizeResult)}

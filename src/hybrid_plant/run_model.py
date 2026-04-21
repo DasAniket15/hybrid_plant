@@ -336,7 +336,6 @@ def print_section7(fi, data, params, aug_data=None):
     annual_load = float(np.sum(data["load_profile"]))
     ppa_env     = params["ppa_capacity_mw"] * 8760
     cuf_series  = aug_data.get("cuf_series", None) if aug_data else None
-    adj_targets = aug_data.get("adjusted_target_series", None) if aug_data else None
 
     raw_solar_annual = float(np.sum(params["solar_capacity_mw"] * data["solar_cuf"]))
     raw_wind_annual  = float(np.sum(params["wind_capacity_mw"]  * data["wind_cuf"]))
@@ -347,7 +346,7 @@ def print_section7(fi, data, params, aug_data=None):
     print(f"  Raw Wind  @ nameplate Y1   : {raw_wind_annual:.1f}")
 
     print(f"\n  {'Yr':>3}  {'Meter MWh':>10}  {'DISCOM MWh':>10}  {'RE Pen%':>7}  "
-          f"{'Solar CUF%':>10}  {'Plant CUF%':>10}  {'Adj Tgt%':>9}  {'PPA Util%':>9}")
+          f"{'Solar CUF%':>10}  {'Plant CUF%':>10}  {'PPA Util%':>9}")
     sep()
     for y in range(25):
         yr = y + 1
@@ -355,15 +354,13 @@ def print_section7(fi, data, params, aug_data=None):
         busbar = ep["delivered_pre_mwh"][y]
         discom = max(annual_load - meter, 0)
         re_pen = meter / annual_load * 100 if annual_load else 0
-        # Solar CUF per year = raw_solar × solar_eff / (solar_mw × 8760) → that's eff × baseline Solar CUF
         baseline_solar_cuf = raw_solar_annual / (params["solar_capacity_mw"] * 8760) * 100 if params["solar_capacity_mw"] else 0
         s_eff  = operating_value(solar_eff_curve, yr)
         solar_cuf_y = baseline_solar_cuf * s_eff
         plant_cuf   = cuf_series[y] if cuf_series else busbar / ppa_env * 100
-        adj_tgt     = adj_targets[y] if adj_targets else plant_cuf
         ppa_util    = busbar / ppa_env * 100
         print(f"  {yr:>3}  {meter:>10.1f}  {discom:>10.1f}  {re_pen:>6.2f}%  "
-              f"{solar_cuf_y:>9.2f}%  {plant_cuf:>9.2f}%  {adj_tgt:>8.2f}%  {ppa_util:>8.2f}%")
+              f"{solar_cuf_y:>9.2f}%  {plant_cuf:>9.2f}%  {ppa_util:>8.2f}%")
     sep()
 
     # ─────────────────────────────────────────────────────────────────────
@@ -401,14 +398,12 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
     """Section 6b — Augmentation Timeline & Economics."""
     sep("SECTION 6b — AUGMENTATION")
     events          = aug_data["event_log"]
-    skipped_events  = aug_data.get("skipped_event_log", [])
     init_cont       = aug_data["initial_containers"]
     container_size  = float(fi.get("_container_size_mwh", 5.015))
     solver_b_star   = baseline_result.best_params["bess_containers"]
 
     total_added = aug_data["total_containers_added"]
     n_events    = aug_data["n_events"]
-    n_skipped   = aug_data.get("n_skipped", len(skipped_events))
 
     lump_total = aug_data["total_lump_cost_rs"]
     om_total   = aug_data["total_om_cost_rs"]
@@ -418,8 +413,6 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
     sweep_log        = aug_data.get("oversize_sweep_log", [])
 
     print(f"\n  {'Trigger threshold CUF (Pass-1 baseline Y1)':<46} : {aug_data['trigger_threshold_cuf']:.4f} %")
-    print(f"  {'Restoration target CUF (oversized Y1)':<46} : {aug_data['restoration_target_cuf']:.4f} %")
-    print(f"  Adjusted target = restoration_target × weighted solar/wind deg factor")
     print()
     print(f"  {'Pass-1 solver containers (B*)':<46} : {solver_b_star}")
     print(f"  {'Extra containers added upfront (oversize)':<46} : {extra_containers}")
@@ -443,13 +436,12 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
                 shown_tail = sweep_log[8:]
             else:
                 shown_tail = []
-            print(f"  {'Extra':>6}  {'InitCont':>8}  {'NPV (Cr)':>10}  {'Events':>7}  {'Skipped':>8}  {'Reason'}")
+            print(f"  {'Extra':>6}  {'InitCont':>8}  {'NPV (Cr)':>10}  {'Events':>7}  {'Reason'}")
             sep()
             for entry in shown:
                 flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
                 print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
                       f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
-                      f"{entry.get('n_skipped', 0):>8}  "
                       f"{entry.get('terminated_reason') or '':>10}{flag}")
             if shown_tail:
                 print(f"  {'...':<6}")
@@ -457,57 +449,42 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
                     flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
                     print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
                           f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
-                          f"{entry.get('n_skipped', 0):>8}  "
                           f"{entry.get('terminated_reason') or '':>10}{flag}")
             sep()
     print()
     print(f"  {'Augmentation events fired':<46} : {n_events}")
-    print(f"  {'Augmentation events skipped (payback filter)':<46} : {n_skipped}")
     print(f"  {'Total containers added (events only)':<46} : {total_added}")
     print(f"  {'Total augmentation lump-sum cost':<46} : Rs {cr(lump_total):.2f} Cr  (OPEX, undepreciated)")
     print(f"  {'Total augmentation O&M (lifetime)':<46} : Rs {cr(om_total):.2f} Cr")
 
-    # Combined fired + skipped event table
-    all_events = (
-        [{**ev, "_fired": True}  for ev in events] +
-        [{**ev, "_fired": False} for ev in skipped_events]
-    )
-    all_events.sort(key=lambda e: e["year"])
-
-    if all_events:
+    if events:
         print(f"\n  AUGMENTATION EVENT TIMELINE")
         print(f"  (Upfront oversize: {solver_b_star} → {init_cont} containers at Y1; "
               f"event-year additions shown below)\n")
         hdr = (
-            f"  {'Yr':>4}  {'Status':>7}  {'Pre-CUF':>9}  {'Cont':>5}  {'New MWh':>8}  "
-            f"{'Lump (Cr)':>10}  {'Post-CUF':>9}  {'AdjTgt':>8}  {'≥Adj?':>5}  {'CumCont':>8}"
+            f"  {'Yr':>4}  {'Pre-CUF':>9}  {'Cont':>5}  {'New MWh':>8}  "
+            f"{'Lump (Cr)':>10}  {'Post-CUF':>9}  {'≥Thresh?':>9}  {'CumCont':>8}"
         )
         print(hdr)
         sep()
         cum_containers = init_cont
-        for ev in all_events:
-            fired       = ev["_fired"]
-            status      = "FIRED" if fired else "SKIPPED"
-            k           = ev["k_containers"]    # 0 if skipped
+        for ev in events:
+            k           = ev["k_containers"]
             cum_containers += k
             new_mwh     = k * container_size
-            reached_adj = "Y" if ev.get("reached_adjusted", False) else "N"
-            lump_str    = f"{cr(ev['lump_cost_rs']):>10.2f}" if fired else f"{'(skipped)':>10}"
+            reached     = "Y" if ev.get("reached_hard", False) else "N"
             print(
                 f"  {ev['year']:>4}  "
-                f"{status:>7}  "
                 f"{ev['trigger_cuf']:>8.4f}%  "
                 f"{k:>5}  "
                 f"{new_mwh:>8.2f}  "
-                f"{lump_str}  "
+                f"{cr(ev['lump_cost_rs']):>10.2f}  "
                 f"{ev['post_event_cuf']:>8.4f}%  "
-                f"{ev.get('adjusted_target', float('nan')):>7.4f}%  "
-                f"{reached_adj:>5}  "
+                f"{reached:>9}  "
                 f"{cum_containers:>8}"
             )
         sep()
-        print(f"  ≥Adj?   = post-event CUF ≥ adjusted target (achievable given solar/wind deg)")
-        print(f"  SKIPPED = event failed payback filter (lump cost > NPV of incremental RE)")
+        print(f"  ≥Thresh? = post-event CUF ≥ hard threshold")
     else:
         print("\n  (No augmentation events triggered over 25-year life)")
 
@@ -525,7 +502,7 @@ def plot_augmentation_dashboard(
     """
     Generate a 3-panel augmentation dashboard PNG.
 
-    Panel 1 — Plant CUF curve with trigger / adjusted-target lines and event markers
+    Panel 1 — Plant CUF curve with trigger threshold line and event markers
     Panel 2 — Cohort effective capacity stacked area
     Panel 3 — Annual savings bars + lump-sum event costs + cumulative line
     """
@@ -533,10 +510,8 @@ def plot_augmentation_dashboard(
 
     years      = np.arange(1, 26)
     cuf_series = np.array(aug_data["cuf_series"])
-    adj_targets = np.array(aug_data.get("adjusted_target_series", cuf_series))
     events     = aug_data["event_log"]
     threshold  = aug_data["trigger_threshold_cuf"]
-    target     = aug_data["restoration_target_cuf"]
     timeline   = aug_data["cohort_capacity_timeline"]
     lump_series = np.array(aug_data["opex_augmentation_lump"]) / CRORE_TO_RS
 
@@ -548,8 +523,6 @@ def plot_augmentation_dashboard(
     # ── Panel 1: Plant CUF ───────────────────────────────────────────────────
     ax1 = axes[0]
     ax1.plot(years, cuf_series, color="#1565C0", lw=2.0, label="Scenario CUF (with aug)", zorder=3)
-    ax1.plot(years, adj_targets, color="#2e7d32", lw=1.5, ls=":",
-             label="Adjusted target (solar+wind deg)", zorder=3)
 
     if baseline_cuf_series is not None:
         ax1.plot(years, baseline_cuf_series, color="#BDBDBD", lw=1.5,
@@ -572,7 +545,7 @@ def plot_augmentation_dashboard(
     ax1.set_title("Panel 1 — Plant CUF Curve", fontsize=10, loc="left")
     ax1.legend(fontsize=8, framealpha=0.9)
     ax1.grid(axis="y", alpha=0.3)
-    ax1.set_ylim(max(0, threshold - 5), target + 6)
+    ax1.set_ylim(max(0, threshold - 5), max(cuf_series) + 2)
 
     # ── Panel 2: Cohort capacity stacked area ────────────────────────────────
     ax2 = axes[1]
@@ -1018,7 +991,7 @@ if __name__ == "__main__":
         from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf as _cuf_fn, year1_busbar_mwh
         from hybrid_plant.data_loader import load_soh_curve, operating_value
         from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
-        from hybrid_plant.augmentation.oversize_optimizer import find_optimal_oversize
+        from hybrid_plant.augmentation.augmentation_solver import AugmentationSolver
 
         # Guard: if solver chose bess_containers=0, augmentation has nothing to work with
         if baseline_result.best_params["bess_containers"] == 0:
@@ -1044,7 +1017,6 @@ if __name__ == "__main__":
             aug_engine = AugmentationEngine(
                 config, data, energy_engine, soh_curve,
                 trigger_threshold_cuf = trigger_threshold_cuf,
-                pass1_lcoe            = baseline_result.best_lcoe,
             )
 
             # Compute NO-AUGMENTATION baseline CUF series for the dashboard plot
@@ -1085,21 +1057,21 @@ if __name__ == "__main__":
                               + float(np.sum(_sim["discharge_pre"])))
                 baseline_cuf_ser.append(_cuf_fn(_busbar_yr, _ppa))
 
-            # ── Oversize sweep ────────────────────────────────────────────────
-            print("\n[Augmentation] Running oversize sweep (full mode) …")
-            os_result = find_optimal_oversize(
-                augmentation_engine  = aug_engine,
-                base_params          = baseline_result.best_params,
-                threshold_cuf        = trigger_threshold_cuf,
-                max_extra_containers = int(aug_cfg.get("max_oversize_containers", 500)),
-                patience             = int(aug_cfg.get("oversize_patience", 3)),
-                tolerance            = float(aug_cfg.get("oversize_npv_tolerance_rs", 1e3)),
+            # ── Augmentation solver (Optuna TPE) ─────────────────────────────
+            n_trials = int(aug_cfg.get("solver", {}).get("n_trials", 100))
+            print(f"\n[Augmentation] Running augmentation solver ({n_trials} trials) …")
+            aug_solver = AugmentationSolver(
+                augmentation_engine = aug_engine,
+                base_params         = baseline_result.best_params,
+                baseline_cuf        = trigger_threshold_cuf,
+                config              = config,
             )
-            print(f"  [Aug] Oversize sweep done: best_extra={os_result.best_extra}  "
+            os_result = aug_solver.solve()
+            print(f"  [Aug] Solver done: best_extra={os_result.best_extra}  "
                   f"initial={os_result.best_initial_containers}  "
-                  f"candidates={len(os_result.sweep_log)}")
+                  f"trials={os_result.n_trials_completed}")
 
-            # Merge best-oversize finance into baseline_result for dashboard
+            # Merge best result into baseline_result for dashboard
             baseline_result.full_result["finance"] = os_result.best_result["finance"]
             baseline_result.full_result["year1"]   = os_result.best_result["year1"]
             aug_data = os_result.best_result["finance"]["augmentation"]
