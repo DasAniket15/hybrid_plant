@@ -88,6 +88,7 @@ class AugmentationSolveResult:
     """
     best_extra:              int
     best_initial_containers: int
+    best_cuf_buffer_pp:      float
     best_result:             dict[str, Any]
     sweep_log:               list[dict[str, Any]] = field(default_factory=list)
     n_trials_completed:      int = 0
@@ -128,6 +129,9 @@ class AugmentationSolver:
         self._max_events   = int(solver_cfg.get("max_events_override", 20))
         self._seed         = int(solver_cfg.get("seed", 42))
         self._tol          = float(aug_cfg.get("trigger_tolerance_pp", 0.05))
+        self._cuf_buf_min  = float(solver_cfg.get("cuf_buffer_pp_min", 0.0))
+        self._cuf_buf_max  = float(solver_cfg.get("cuf_buffer_pp_max", 3.0))
+        self._event_penalty = float(solver_cfg.get("event_penalty_rs_per_event", 0.0))
 
         self._sweep_log: list[dict[str, Any]] = []
 
@@ -148,28 +152,35 @@ class AugmentationSolver:
         )
         study.optimize(self._objective, n_trials=self._n_trials)
 
-        best_extra = int(study.best_params["extra"])
+        best_extra    = int(study.best_params["extra"])
+        best_cuf_buf  = float(study.best_params["cuf_buffer_pp"])
         logger.info(
             "AugmentationSolver: Optuna done. best_extra=%d  best_initial=%d  "
-            "best_npv=%.2f Cr  trials=%d",
+            "best_cuf_buffer_pp=%.3f  best_npv=%.2f Cr  trials=%d",
             best_extra,
             self._base_cont + best_extra,
+            best_cuf_buf,
             study.best_value / 1e7,
             len(study.trials),
         )
 
         # Final accurate re-run with full mode
-        logger.info("AugmentationSolver: re-running best extra=%d in full mode …", best_extra)
+        logger.info(
+            "AugmentationSolver: re-running best extra=%d  cuf_buffer_pp=%.3f in full mode …",
+            best_extra, best_cuf_buf,
+        )
         best_result = self._engine.evaluate_scenario(
             params              = self._base_params,
             initial_containers  = self._base_cont + best_extra,
             fast_mode           = False,
             max_events_override = self._max_events,
+            cuf_buffer_pp       = best_cuf_buf,
         )
 
         return AugmentationSolveResult(
             best_extra              = best_extra,
             best_initial_containers = self._base_cont + best_extra,
+            best_cuf_buffer_pp      = best_cuf_buf,
             best_result             = best_result,
             sweep_log               = self._sweep_log,
             n_trials_completed      = len(study.trials),
@@ -178,19 +189,25 @@ class AugmentationSolver:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _objective(self, trial: optuna.Trial) -> float:
-        """Optuna objective: suggest extra, evaluate, return NPV or PENALTY."""
-        extra  = trial.suggest_int("extra", 0, self._max_extra)
+        """Optuna objective: suggest extra + cuf_buffer_pp, return penalised NPV or PENALTY."""
+        extra         = trial.suggest_int("extra", 0, self._max_extra)
+        cuf_buffer_pp = trial.suggest_float(
+            "cuf_buffer_pp", self._cuf_buf_min, self._cuf_buf_max
+        )
+
         result = self._engine.evaluate_scenario(
             params              = self._base_params,
             initial_containers  = self._base_cont + extra,
             fast_mode           = True,
             max_events_override = self._max_events,
+            cuf_buffer_pp       = cuf_buffer_pp,
         )
 
-        fi        = result["finance"]
-        aug       = fi.get("augmentation", {})
+        fi         = result["finance"]
+        aug        = fi.get("augmentation", {})
         cuf_series = aug.get("cuf_series", [])
-        npv       = fi["savings_npv"]
+        npv        = fi["savings_npv"]
+        n_events   = aug.get("n_events", 0)
 
         # Hard CUF constraint: reject trials where CUF dips below floor
         feasible = (
@@ -198,11 +215,15 @@ class AugmentationSolver:
             and min(cuf_series) >= self._baseline_cuf - self._tol
         )
 
+        penalised_npv = npv - self._event_penalty * n_events
+
         self._sweep_log.append({
             "extra":              extra,
+            "cuf_buffer_pp":      cuf_buffer_pp,
             "initial_containers": self._base_cont + extra,
             "npv":                npv,
-            "n_events":           aug.get("n_events", 0),
+            "penalised_npv":      penalised_npv if feasible else None,
+            "n_events":           n_events,
             "total_aug_cost_rs":  (aug.get("total_lump_cost_rs", 0.0)
                                    + aug.get("total_om_cost_rs", 0.0)),
             "feasible":           feasible,
@@ -211,16 +232,18 @@ class AugmentationSolver:
 
         if not feasible:
             logger.debug(
-                "AugmentationSolver trial %d: extra=%d  infeasible "
+                "AugmentationSolver trial %d: extra=%d  buf=%.3f  infeasible "
                 "(min_cuf=%.4f < baseline_cuf=%.4f)",
-                trial.number, extra,
+                trial.number, extra, cuf_buffer_pp,
                 min(cuf_series) if cuf_series else float("nan"),
                 self._baseline_cuf,
             )
             return PENALTY
 
         logger.debug(
-            "AugmentationSolver trial %d: extra=%d  npv=%.2f Cr  n_events=%d",
-            trial.number, extra, npv / 1e7, aug.get("n_events", 0),
+            "AugmentationSolver trial %d: extra=%d  buf=%.3f  npv=%.2f Cr  "
+            "n_events=%d  penalised_npv=%.2f Cr",
+            trial.number, extra, cuf_buffer_pp, npv / 1e7,
+            n_events, penalised_npv / 1e7,
         )
-        return npv
+        return penalised_npv

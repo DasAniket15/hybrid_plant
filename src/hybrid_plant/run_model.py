@@ -420,6 +420,7 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
     print(f"  {'Initial BESS containers (B* + extra)':<46} : {init_cont}")
     print()
 
+    best_cuf_buf = aug_data.get("best_cuf_buffer_pp")
     if sweep_log:
         n_candidates = len(sweep_log)
         best_entry   = next((e for e in sweep_log if e["extra"] == extra_containers), None)
@@ -427,6 +428,8 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
         print(f"  OVERSIZE SWEEP SUMMARY")
         print(f"  {'Candidates evaluated':<46} : {n_candidates}")
         print(f"  {'Best extra':<46} : {extra_containers}")
+        if best_cuf_buf is not None:
+            print(f"  {'Best CUF buffer (pp)':<46} : {best_cuf_buf:.3f} pp")
         print(f"  {'Best oversized NPV':<46} : Rs {best_npv_cr:.2f} Cr")
         if sweep_log:
             print(f"\n  Sweep log (first 8 + last 3 entries):")
@@ -437,20 +440,20 @@ def print_section6b(aug_data: dict, baseline_result, fi: dict) -> None:
                 shown_tail = sweep_log[8:]
             else:
                 shown_tail = []
-            print(f"  {'Extra':>6}  {'InitCont':>8}  {'NPV (Cr)':>10}  {'Events':>7}  {'Reason'}")
+            print(f"  {'Extra':>6}  {'BufPP':>6}  {'InitCont':>8}  {'NPV (Cr)':>10}  {'Events':>7}")
             sep()
             for entry in shown:
                 flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
-                print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
-                      f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
-                      f"{entry.get('terminated_reason') or '':>10}{flag}")
+                print(f"  {entry['extra']:>6}  {entry.get('cuf_buffer_pp', 0.0):>6.3f}  "
+                      f"{entry['initial_containers']:>8}  "
+                      f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}{flag}")
             if shown_tail:
                 print(f"  {'...':<6}")
                 for entry in shown_tail:
                     flag = " ◀ BEST" if entry["extra"] == extra_containers else ""
-                    print(f"  {entry['extra']:>6}  {entry['initial_containers']:>8}  "
-                          f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}  "
-                          f"{entry.get('terminated_reason') or '':>10}{flag}")
+                    print(f"  {entry['extra']:>6}  {entry.get('cuf_buffer_pp', 0.0):>6.3f}  "
+                          f"{entry['initial_containers']:>8}  "
+                          f"{cr(entry['npv']):>10.2f}  {entry['n_events']:>7}{flag}")
             sep()
     print()
     print(f"  {'Augmentation events fired':<46} : {n_events}")
@@ -1070,6 +1073,7 @@ if __name__ == "__main__":
             os_result = aug_solver.solve()
             print(f"  [Aug] Solver done: best_extra={os_result.best_extra}  "
                   f"initial={os_result.best_initial_containers}  "
+                  f"best_cuf_buffer={os_result.best_cuf_buffer_pp:.3f}pp  "
                   f"trials={os_result.n_trials_completed}")
 
             # Merge best result into baseline_result for dashboard
@@ -1080,6 +1084,7 @@ if __name__ == "__main__":
             aug_data["oversize_sweep_log"]            = os_result.sweep_log
             aug_data["extra_containers_oversized"]    = os_result.best_extra
             aug_data["initial_containers_oversized"]  = os_result.best_initial_containers
+            aug_data["best_cuf_buffer_pp"]            = os_result.best_cuf_buffer_pp
 
     # ── Resolve final result for rendering ───────────────────────────────────
     result = baseline_result
