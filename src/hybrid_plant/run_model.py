@@ -307,7 +307,8 @@ def print_section7(fi, data, params, aug_data=None):
 
     # Reconstruct cohort containers per year
     container_counts = []
-    init_c = params["bess_containers"]
+    init_c = (aug_data["initial_containers"] if aug_data and "initial_containers" in aug_data
+              else params["bess_containers"])
     events = aug_data["event_log"] if aug_data else []
     cum = init_c
     for y in range(1, 26):
