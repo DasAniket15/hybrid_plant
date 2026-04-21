@@ -13,8 +13,8 @@ immediately fires an augmentation event — which is not economically ideal.
 
 This module sweeps extra = 0, 1, 2, … and evaluates:
   • initial_containers = B* + extra
-  • restoration_target_cuf = Y1 CUF with B* + extra (always > threshold)
-  • full 25-year lifecycle with minimum-k search and payback filter
+  • initial_containers = B* + extra
+  • full 25-year lifecycle with minimum-k search (at most max_augmentation_events events)
 
 The candidate that maximises savings_npv (strict improvement by more than
 ``tolerance`` Rs) is selected.  Tie-breaking favours lower extra (less
@@ -61,7 +61,7 @@ class OversizeResult:
     best_result               : dict  — full evaluate_scenario() output for the winner
     sweep_log                 : list[dict] — one entry per candidate evaluated:
                                   {extra, initial_containers, npv, n_events,
-                                   n_skipped, total_aug_cost_rs, terminated_reason}
+                                   total_aug_cost_rs, terminated_reason}
     """
     best_extra:              int
     best_initial_containers: int
@@ -88,7 +88,7 @@ def find_optimal_oversize(
     Parameters
     ----------
     augmentation_engine   : AugmentationEngine — constructed with Pass-1
-                            trigger_threshold_cuf and pass1_lcoe.
+                            trigger_threshold_cuf.
     base_params           : C* from Pass 1 (solver's best_params dict).
     threshold_cuf         : pre-oversize Y1 CUF (fixed reference; not used
                             internally but kept for traceability in sweep_log).
@@ -121,7 +121,6 @@ def find_optimal_oversize(
             "initial_containers": base_containers + extra,
             "npv":                fi["savings_npv"],
             "n_events":           aug.get("n_events", 0),
-            "n_skipped":          aug.get("n_skipped", 0),
             "total_aug_cost_rs":  (aug.get("total_lump_cost_rs", 0.0)
                                    + aug.get("total_om_cost_rs", 0.0)),
             "terminated_reason":  reason,

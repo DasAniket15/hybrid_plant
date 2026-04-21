@@ -33,6 +33,7 @@ bess:
     #            without reaching the restoration target.  NOT a target itself.
     minimum_augmentation_containers: 1
     max_augmentation_containers_per_event: 50   # safety cap; emits warning if hit
+    max_augmentation_events: 3                  # total events allowed across 25-year life
 
     # ── Oversize sweep (post-processing, single-pass) ────────────────────────
     # After Pass-1 solver selects B* containers, a sweep tries B* + extra for
@@ -47,7 +48,7 @@ bess:
     # proxy_rate = (discom_tariff_y1 − pass1_lcoe) × 1000  [Rs per MWh]
     # Uses Y1 values; does not project tariff escalation (first-order screen).
     payback_filter:
-      enabled: true
+      enabled: false
 
   salvage:
     enabled: true

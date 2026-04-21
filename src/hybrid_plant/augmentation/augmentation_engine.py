@@ -14,8 +14,6 @@ reused across all evaluate_scenario() calls:
   • shared PlantEngine (already constructed by Year1Engine)
   • SOH curve, solar/wind efficiency curves
   • trigger_threshold_cuf — fixed from Pass-1 baseline
-  • payback_filter closure — per-event economic gate (built at init if
-    pass1_lcoe is supplied and payback_filter.enabled = true in bess.yaml)
 
 Each call to evaluate_scenario() is stateless from the caller's perspective;
 internally it constructs a fresh LifecycleSimulator and CohortRegistry.
@@ -64,10 +62,8 @@ class AugmentationEngine:
     energy_engine         : Year1Engine — provides the shared PlantEngine
     soh_curve             : dict[int, float] — {year: soh_fraction}
     trigger_threshold_cuf : float — pre-oversize Year-1 Plant CUF (Pass-1 output);
-                            acts as the hard floor that triggers augmentation.
-    pass1_lcoe            : float | None — Pass-1 LCOE in Rs/kWh, used to build the
-                            payback filter proxy rate.  If None (default), the payback
-                            filter is disabled regardless of bess.yaml config.
+                            acts as the hard floor that triggers augmentation and
+                            the restoration target for the k-search.
     """
 
     def __init__(
@@ -77,7 +73,6 @@ class AugmentationEngine:
         energy_engine:         Any,
         soh_curve:             dict[int, float],
         trigger_threshold_cuf: float,
-        pass1_lcoe:            float | None = None,
     ) -> None:
         self._config     = config
         self._data       = data
@@ -96,12 +91,7 @@ class AugmentationEngine:
             "efficiency",
         )
 
-        # Build the optional per-event payback filter
-        self._payback_filter = self._build_payback_filter(
-            config, soh_curve, pass1_lcoe
-        )
-
-        # Build a reusable LifecycleSimulator template (event_filter injected here)
+        # Build a reusable LifecycleSimulator template
         self._lc_kwargs = dict(
             config          = config,
             plant_engine    = energy_engine.plant,
@@ -109,7 +99,6 @@ class AugmentationEngine:
             solar_eff_curve = self._solar_eff,
             wind_eff_curve  = self._wind_eff,
             loss_factor     = self._loss_factor,
-            event_filter    = self._payback_filter,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -140,9 +129,7 @@ class AugmentationEngine:
         dict — same structure as FinanceEngine.evaluate() return value, plus:
             finance["augmentation"] = {
                 "trigger_threshold_cuf": float,
-                "restoration_target_cuf": float,
                 "event_log": list[dict],
-                "skipped_event_log": list[dict],
                 "cuf_series": list[float],
                 "cohort_snapshot": list[dict],
                 "cohort_capacity_timeline": dict[int, list[float]],
@@ -151,7 +138,6 @@ class AugmentationEngine:
                 "initial_containers": int,
                 "total_containers_added": int,
                 "n_events": int,
-                "n_skipped": int,
             }
         """
         from hybrid_plant.finance.finance_engine import FinanceEngine
@@ -172,25 +158,16 @@ class AugmentationEngine:
             bess_charge_source = params["bess_charge_source"],
         )
 
-        # ── Step 2: Restoration target = Y1 CUF with initial_containers ───
-        # Post-oversizing this will be strictly > trigger_threshold_cuf,
-        # giving real degradation headroom before the first trigger fires.
-        restoration_target_cuf = compute_plant_cuf(
-            year1_busbar_mwh(year1),
-            params["ppa_capacity_mw"],
-        )
-
-        # ── Step 3: Lifecycle simulation ───────────────────────────────────
+        # ── Step 2: Lifecycle simulation ───────────────────────────────────
         simulator = LifecycleSimulator(**self._lc_kwargs)
         lc_result = simulator.simulate(
             params                  = params,
             initial_containers      = initial_containers,
             trigger_threshold_cuf   = self._threshold,
-            restoration_target_cuf  = restoration_target_cuf,
             fast_mode               = fast_mode,
         )
 
-        # ── Step 4: Build combined OPEX augmentation series ────────────────
+        # ── Step 3: Build combined OPEX augmentation series ────────────────
         opex_aug_combined = [
             lump + om
             for lump, om in zip(
@@ -199,7 +176,7 @@ class AugmentationEngine:
             )
         ]
 
-        # ── Step 5: Finance pipeline with overrides ────────────────────────
+        # ── Step 4: Finance pipeline with overrides ────────────────────────
         finance_engine = FinanceEngine(self._config, self._data)
         finance = finance_engine.evaluate(
             year1_results             = year1,
@@ -211,15 +188,12 @@ class AugmentationEngine:
             opex_augmentation_series  = opex_aug_combined,
         )
 
-        # ── Step 6: Attach augmentation metadata ──────────────────────────
+        # ── Step 5: Attach augmentation metadata ──────────────────────────
         total_added = sum(e["k_containers"] for e in lc_result.event_log)
         finance["augmentation"] = {
             "trigger_threshold_cuf":    self._threshold,
-            "restoration_target_cuf":   restoration_target_cuf,
             "event_log":                lc_result.event_log,
-            "skipped_event_log":        lc_result.skipped_event_log,
             "cuf_series":               lc_result.cuf_series,
-            "adjusted_target_series":   lc_result.adjusted_target_series,
             "cohort_snapshot":          lc_result.cohort_snapshot,
             "cohort_capacity_timeline": lc_result.cohort_capacity_timeline,
             "opex_augmentation_lump":   lc_result.opex_augmentation_lump,
@@ -229,96 +203,6 @@ class AugmentationEngine:
             "initial_containers":       initial_containers,
             "total_containers_added":   total_added,
             "n_events":                 len(lc_result.event_log),
-            "n_skipped":                len(lc_result.skipped_event_log),
         }
 
         return {"year1": year1, "finance": finance}
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Private helpers
-    # ─────────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _build_payback_filter(
-        config:     Any,
-        soh_curve:  dict[int, float],
-        pass1_lcoe: float | None,
-    ):
-        """
-        Construct a per-event payback filter closure, or return None if the
-        filter is disabled (either by config or by pass1_lcoe being absent).
-
-        The closure signature is: (event_info: dict) -> bool
-          Returns True  → fire the event
-          Returns False → skip the event (logged at INFO level by the caller)
-
-        Payback test (section 2.4 of the redesign spec)
-        ────────────────────────────────────────────────
-          proxy_rate = (discom_tariff − pass1_lcoe) × 1000  [Rs/MWh]
-          For t = event_year … project_life:
-              value_t   = delta_busbar × bess_decay(age_offset) × proxy_rate
-              cost_t    = annual_om
-              df        = 1 / (1 + wacc)^(t − event_year)
-          total_value = Σ value_t × df
-          total_cost  = lump_cost + Σ annual_om × df
-          pass = total_value > total_cost
-        """
-        aug_cfg = config.bess["bess"]["augmentation"]
-        pf_cfg  = aug_cfg.get("payback_filter", {})
-        if not bool(pf_cfg.get("enabled", False)):
-            return None
-        if pass1_lcoe is None:
-            return None
-
-        from hybrid_plant.finance.savings_model import SavingsModel
-        from hybrid_plant.finance.lcoe_model import LCOEModel
-        from hybrid_plant.data_loader import operating_value
-
-        discom_tariff  = SavingsModel._weighted_discom_tariff(config)
-        wacc           = LCOEModel(config).wacc
-        container_size = float(config.bess["bess"]["container"]["size_mwh"])
-        cost_per_mwh   = float(aug_cfg["cost_per_mwh"])
-        om_rs_per_mwh  = float(config.finance["opex"]["bess"]["rate_lakh_per_mwh"]) * LAKH_TO_RS
-        project_life   = int(config.project["project"]["project_life_years"])
-        proxy_rate     = (discom_tariff - pass1_lcoe) * 1000.0   # Rs/MWh
-
-        def payback_filter(event_info: dict) -> bool:
-            event_year   = event_info["year"]
-            k            = event_info["k_containers"]
-            pre_busbar   = event_info["pre_event_busbar_mwh"]
-            post_busbar  = event_info["post_event_busbar_mwh"]
-
-            lump_cost    = k * container_size * cost_per_mwh
-            annual_om    = k * container_size * om_rs_per_mwh
-            delta_busbar = post_busbar - pre_busbar   # MWh incremental in event year
-
-            if proxy_rate <= 0.0:
-                # Augmentation has no economic value at the margin — always skip
-                logger.info(
-                    "Payback filter Y%d: proxy_rate=%.4f Rs/MWh <= 0 — skipping event.",
-                    event_year, proxy_rate,
-                )
-                return False
-
-            total_value_rs = 0.0
-            total_cost_rs  = lump_cost    # lump paid at t=event_year, df=1.0
-
-            for t in range(event_year, project_life + 1):
-                age_offset = t - event_year + 1        # 1 at event_year (fresh)
-                bess_decay = operating_value(soh_curve, age_offset)
-                df         = 1.0 / (1.0 + wacc) ** (t - event_year)
-                total_value_rs += delta_busbar * bess_decay * proxy_rate * df
-                total_cost_rs  += annual_om * df
-
-            passes = total_value_rs > total_cost_rs
-            if not passes:
-                logger.info(
-                    "Payback filter Y%d: SKIPPED. k=%d, lump=%.0f Rs, "
-                    "value=%.0f Rs, cost=%.0f Rs, remaining=%d yrs.",
-                    event_year, k, lump_cost,
-                    total_value_rs, total_cost_rs,
-                    project_life - event_year + 1,
-                )
-            return passes
-
-        return payback_filter
