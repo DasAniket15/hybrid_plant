@@ -19,7 +19,7 @@ bess:
     # REMOVED: mode         — stub; only "optimized" was ever implemented
     # REMOVED: fixed_schedule — stub for future use; never implemented
 
-    cost_per_mwh: 0.60e7               # Rs per MWh of new container capacity (lump-sum procurement)
+    cost_per_mwh: 0.90e7               # Rs per MWh of new container capacity (lump-sum procurement)
 
     # Trigger fires when cuf_t < trigger_threshold_cuf − trigger_tolerance_pp.
     # Expressed in PERCENTAGE POINTS.  Oversizing provides real headroom, so a

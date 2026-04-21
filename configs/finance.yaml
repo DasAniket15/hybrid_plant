@@ -1,18 +1,18 @@
 capex:
 
   solar:
-    cost_per_mwp: 2.26e7
+    cost_per_mwp: 2.38e7
     ac_dc_ratio: 1.398
 
   wind:
     cost_per_mw: 7.0e7
 
   bess:
-    cost_per_mwh: 0.60e7
+    cost_per_mwh: 0.90e7
 
   transmission:
     cost_per_km: 1.3e7
-    length_km: 10
+    length_km: 40
 
 
 opex:
