@@ -32,7 +32,7 @@ bess:
     #   maximum: pure safety cap — warns if the minimum-k search must hit this
     #            without reaching the restoration target.  NOT a target itself.
     minimum_augmentation_containers: 1
-    max_augmentation_containers_per_event: 50   # safety cap; emits warning if hit
+    max_augmentation_containers_per_event: 500  # safety cap; emits warning if hit
     max_augmentation_events: 20                 # high ceiling; AugmentationSolver overrides via max_events_override
 
     # ── Augmentation solver (Optuna TPE, replaces oversize sweep) ───────────
