@@ -29,6 +29,7 @@ B* + extra candidates without altering the solver's chosen params.
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +129,11 @@ class AugmentationEngine:
         max_events_override: passed through to LifecycleSimulator; overrides
                              config max_augmentation_events (0 = no events,
                              large int = unlimited).
+        cuf_buffer_pp      : Deprecated.  Previously a solver-tuned restoration
+                             buffer; replaced by horizon-based sizing.  Passing a
+                             non-zero value emits a DeprecationWarning and the
+                             value is forwarded to LifecycleSimulator (which also
+                             warns and ignores it).
 
         Returns
         -------
@@ -150,6 +156,15 @@ class AugmentationEngine:
         # Resolve initial container count — do NOT mutate params
         if initial_containers is None:
             initial_containers = params["bess_containers"]
+
+        if cuf_buffer_pp != 0.0:
+            warnings.warn(
+                "AugmentationEngine.evaluate_scenario: cuf_buffer_pp is deprecated "
+                "and has no effect.  Horizon-based sizing handles multi-year coverage "
+                "automatically.  Remove this kwarg from your call site.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         # ── Step 1: Year-1 simulation with the (possibly oversized) container count
         year1 = self._engine.evaluate(
