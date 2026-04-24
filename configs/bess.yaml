@@ -35,25 +35,49 @@ bess:
     max_augmentation_containers_per_event: 500  # safety cap; emits warning if hit
     max_augmentation_events: 20                 # high ceiling; AugmentationSolver overrides via max_events_override
 
+    # ── Horizon-based sizing parameters ──────────────────────────────────────
+    # These govern _find_best_horizon_k in LifecycleSimulator.
+    #
+    # safety_margin_pp:
+    #   Numerical guard (pp) added to the hard CUF threshold inside the
+    #   horizon search target.  Absorbs fast-mode linearisation error.
+    #   Not solver-tuned.  Default: 0.05 pp.
+    #
+    # horizon_cap_years:
+    #   Maximum forward-horizon years to verify per event.
+    #   Default = project_life_years (uncapped: always search for the
+    #   longest achievable coverage).
+    #
+    # coverage_cost_ratio_cap:
+    #   Economic guard.  Reject any horizon H whose discounted
+    #   cost-per-coverage-year exceeds this multiple of the H=1 baseline.
+    #   Prevents absurdly expensive long-horizon purchases while preferring
+    #   the longest economically-justified horizon.  Default: 3.0.
+    safety_margin_pp: 0.05
+    horizon_cap_years: 25
+    coverage_cost_ratio_cap: 3.0
+
     # ── Augmentation solver (Optuna TPE, replaces oversize sweep) ───────────
     # AugmentationSolver jointly optimises Year-1 oversizing and lifecycle
     # economics.  Decision variable: extra ∈ [0, max_extra_containers].
     # Hard constraint: CUF must never drop below Pass-1 baseline CUF.
+    # Search space is now 1-D (extra only); cuf_buffer_pp has been removed.
     solver:
       max_extra_containers: 200    # upper bound for Optuna integer search
       n_trials: 100                # Optuna trial budget
       max_events_override: 20      # effectively-unlimited event ceiling per lifecycle
       seed: 42                     # reproducibility
 
-      # cuf_buffer_pp search bounds — Optuna explores this range per trial.
-      # Each event targets hard_threshold + cuf_buffer_pp, giving headroom
-      # before the next trigger.  With ~0.2 pp/yr degradation, buffer=1.4 ≈ 7 yrs.
-      cuf_buffer_pp_min: 0.0
-      cuf_buffer_pp_max: 3.0
-
       # NPV penalty per augmentation event.
       # Nudges Optuna toward upfront oversizing over many small events.
+      # Horizon logic already ensures sparse events; this is a soft secondary nudge.
       event_penalty_rs_per_event: 5_000_000   # 0.5 Cr per event
+
+      # DEPRECATED — these keys are ignored by the solver.
+      # Kept for one release so existing YAML files do not cause parse errors.
+      # Remove in the next version.
+      cuf_buffer_pp_min: 0.0    # deprecated: ignored
+      cuf_buffer_pp_max: 3.0    # deprecated: ignored
 
     # ── Per-event payback filter ─────────────────────────────────────────────
     # Before committing an augmentation event, test whether its NPV is positive

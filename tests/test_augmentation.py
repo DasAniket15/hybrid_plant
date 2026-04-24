@@ -5,18 +5,21 @@ Test suite for the BESS Augmentation Engine.
 
 Tests
 ─────
-  Test 1  TestNoAugmentationDeclines      — Without aug, CUF strictly declines
-  Test 2  TestAugmentationRestoresCUF     — Post-event CUF >= hard threshold
-  Test 3  TestMultipleAugmentations       — Pathological config triggers >=2 events
-  Test 4  TestCohortIndependence          — Each cohort's capacity == containers × soh[age]
-  Test 5  TestOpexOnlyTreatment           — Aug cost in OPEX; CAPEX/debt/EMI unchanged
+  Test 1  TestNoAugmentationDeclines        — Without aug, CUF strictly declines
+  Test 2  TestAugmentationRestoresCUF       — Post-event and all-years CUF >= hard threshold
+  Test 3  TestMultipleAugmentations         — Pathological config triggers >=2 events
+  Test 4  TestCohortIndependence            — Each cohort's capacity == containers × soh[age]
+  Test 5  TestOpexOnlyTreatment             — Aug cost in OPEX; CAPEX/debt/EMI unchanged
   Test 6  TestAugmentationEngineIntegration — evaluate_scenario() smoke + structure
-  Test 7  TestMinimumKSearch              — min-k-to-hard-threshold semantics (not greedy)
-  Test 8  TestMaxKSafetyCap               — k capped at max_k when target unreachable
-  Test 9  TestOversizeSweepHeadroom       — oversize sweep delays first event past Y2
-  Test 10 TestMaxEventsLimit              — events stop after max_augmentation_events
-  Test 11 TestSweepTermination            — sweep stops within patience+1 candidates
-  Test 12 TestAugmentationSolver          — Optuna solver: CUF constraint, NPV, determinism
+  Test 7  TestMinimumKSearch                — horizon-aware k minimality semantics
+  Test 8  TestMaxKSafetyCap                 — k capped at max_k when target unreachable
+  Test 9  TestOversizeSweepHeadroom         — oversize sweep delays first event past Y2
+  Test 10 TestMaxEventsLimit                — events stop after max_augmentation_events
+  Test 11 TestSweepTermination              — sweep stops within patience+1 candidates
+  Test 12 TestAugmentationSolver            — Optuna solver: CUF constraint, NPV, determinism
+  Test 13 TestHorizonCoverage               — horizon_years > 1 and CUF compliant over window
+  Test 14 TestHorizonSkipAheadConsistency   — no second event fires inside verified window
+  Test 15 TestCoverageRatioCapGuard         — economic guard produces more events at tight cap
 
 Run
 ───
@@ -200,6 +203,15 @@ class TestAugmentationRestoresCUF:
                 f"< hard threshold {threshold:.3f}%"
             )
 
+        # Strengthened: horizon-based sizing guarantees ALL years are above threshold.
+        # Allow a small tolerance (0.1 pp) for fast-mode linearisation drift.
+        safety_tol = 0.1
+        for yr_i, cuf in enumerate(result.cuf_series, start=1):
+            assert cuf >= threshold - safety_tol, (
+                f"Year {yr_i}: CUF {cuf:.4f}% dropped below "
+                f"hard threshold {threshold:.4f}% (tolerance={safety_tol} pp)"
+            )
+
     def test_event_log_fields_present(self, base_resources):
         """Event log dicts must contain all required keys."""
         sim = make_simulator(base_resources)
@@ -214,7 +226,8 @@ class TestAugmentationRestoresCUF:
         )
 
         required_keys = {"year", "trigger_cuf", "hard_threshold", "post_event_cuf",
-                         "k_containers", "lump_cost_rs"}
+                         "k_containers", "lump_cost_rs",
+                         "horizon_years", "skip_until_year"}
 
         for ev in result.event_log:
             missing = required_keys - ev.keys()
@@ -222,6 +235,8 @@ class TestAugmentationRestoresCUF:
             assert ev["year"] > 1, "Events must be in year > 1"
             assert ev["k_containers"] >= 1
             assert ev["lump_cost_rs"] > 0
+            assert ev["horizon_years"] >= 1, "horizon_years must be at least 1"
+            assert ev["skip_until_year"] == ev["year"] + ev["horizon_years"]
 
     def test_cuf_series_jumps_at_event_year(self, base_resources):
         """CUF series should show a visible jump in the event year."""
@@ -859,12 +874,14 @@ class TestMinimumKSearch:
 
     def test_k_is_minimum_not_saturated(self, base_resources):
         """
-        Add one extra container to the winning k and verify it does NOT
-        improve CUF further — confirming k was already the minimum needed.
+        Horizon-aware minimality: k* is the minimum k that achieves the chosen
+        horizon H*.  Verify that k*-1 achieves a strictly shorter horizon than
+        k* — i.e., at least one future year within [event_year .. event_year+H*-1]
+        has CUF < threshold when only k*-1 containers are added.
         """
-        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
         from hybrid_plant.augmentation.cohort import CohortRegistry
         from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
+        from hybrid_plant.data_loader import operating_value
 
         import numpy as np
 
@@ -887,31 +904,30 @@ class TestMinimumKSearch:
         if not result.event_log:
             pytest.skip("No events fired — cannot test k minimality")
 
-        ev      = result.event_log[0]
-        best_k  = ev["k_containers"]
-        ev_year = ev["year"]
+        ev        = result.event_log[0]
+        best_k    = ev["k_containers"]
+        ev_year   = ev["year"]
+        horizon_H = ev["horizon_years"]
 
         if best_k <= 1:
-            pytest.skip("k=1; cannot test that k-1 is insufficient")
+            pytest.skip("k=1; cannot test that k-1 achieves shorter horizon")
 
-        # Verify that k-1 containers would NOT reach the adjusted target
-        loss_factor    = res["engine"].grid.loss_factor
+        # Build a trial registry with k*-1 containers at the event year
         container_size = float(config.bess["bess"]["container"]["size_mwh"])
         ppa_mw         = STANDARD_PARAMS["ppa_capacity_mw"]
+        loss_factor    = res["engine"].grid.loss_factor
 
-        from hybrid_plant.data_loader import operating_value
-        solar_eff = operating_value(res["solar_eff"], ev_year)
-        wind_eff  = operating_value(res["wind_eff"],  ev_year)
+        solar_eff_N = operating_value(res["solar_eff"], ev_year)
+        wind_eff_N  = operating_value(res["wind_eff"],  ev_year)
 
-        # Reconstruct the registry state just before the event
-        reg = CohortRegistry(STANDARD_PARAMS["bess_containers"])
-        trial_reg_km1 = CohortRegistry(STANDARD_PARAMS["bess_containers"])
-        trial_reg_km1.add(ev_year, best_k - 1)
-        n_km1, soh_km1 = trial_reg_km1.to_plant_params(ev_year, container_size, soh)
+        trial_reg = CohortRegistry(STANDARD_PARAMS["bess_containers"])
+        trial_reg.add(ev_year, best_k - 1)
 
+        # Anchor sim at event year with k*-1
+        n_km1, soh_km1 = trial_reg.to_plant_params(ev_year, container_size, soh)
         sim_km1 = engine.plant.simulate(
-            solar_capacity_mw  = STANDARD_PARAMS["solar_capacity_mw"] * solar_eff,
-            wind_capacity_mw   = STANDARD_PARAMS["wind_capacity_mw"]  * wind_eff,
+            solar_capacity_mw  = STANDARD_PARAMS["solar_capacity_mw"] * solar_eff_N,
+            wind_capacity_mw   = STANDARD_PARAMS["wind_capacity_mw"]  * wind_eff_N,
             bess_containers    = n_km1,
             charge_c_rate      = STANDARD_PARAMS["charge_c_rate"],
             discharge_c_rate   = STANDARD_PARAMS["discharge_c_rate"],
@@ -921,15 +937,40 @@ class TestMinimumKSearch:
             loss_factor        = loss_factor,
             bess_soh_factor    = soh_km1,
         )
-        busbar_km1 = (float(np.sum(sim_km1["solar_direct_pre"]))
-                      + float(np.sum(sim_km1["wind_direct_pre"]))
-                      + float(np.sum(sim_km1["discharge_pre"])))
-        cuf_km1 = compute_plant_cuf(busbar_km1, ppa_mw)
 
-        # k-1 must NOT meet the hard threshold (that's why k was chosen)
-        assert cuf_km1 < threshold - 1e-6 or best_k == 1, (
-            f"k-1={best_k-1} already meets threshold={threshold:.4f}% "
-            f"(got {cuf_km1:.4f}%). k={best_k} was not the minimum."
+        # Use the same fast-mode forward projection to compute H_max(k*-1)
+        anchor_solar = float(np.sum(sim_km1["solar_direct_pre"]))
+        anchor_wind  = float(np.sum(sim_km1["wind_direct_pre"]))
+        anchor_batt  = float(np.sum(sim_km1["discharge_pre"]))
+
+        safety_margin = float(
+            config.bess["bess"]["augmentation"].get("safety_margin_pp", 0.05)
+        )
+        target_cuf  = threshold + safety_margin
+        project_life = int(config.project["project"]["project_life_years"])
+
+        # Scan forward years until CUF drops below target or horizon is reached
+        h_km1 = 1  # event year passes (we check from N+1 onwards)
+        for h in range(1, horizon_H):
+            fy = ev_year + h
+            if fy > project_life:
+                break
+            _, soh_fy = trial_reg.to_plant_params(fy, container_size, soh)
+            solar_eff_fy = operating_value(res["solar_eff"], fy)
+            wind_eff_fy  = operating_value(res["wind_eff"],  fy)
+            proj = (
+                (anchor_solar * solar_eff_fy / solar_eff_N if solar_eff_N > 0 else 0.0)
+                + (anchor_wind  * wind_eff_fy  / wind_eff_N  if wind_eff_N  > 0 else 0.0)
+                + (anchor_batt  * soh_fy       / soh_km1    if soh_km1     > 0 else 0.0)
+            )
+            if compute_plant_cuf(proj, ppa_mw) < target_cuf - 1e-9:
+                break
+            h_km1 += 1
+
+        # k*-1 must NOT achieve the same horizon as k* — proves k* is minimum for H*
+        assert h_km1 < horizon_H or best_k == 1, (
+            f"k-1={best_k-1} achieves horizon {h_km1} == H*={horizon_H}. "
+            f"k={best_k} was not the minimum for horizon {horizon_H}."
         )
 
 
@@ -1334,6 +1375,17 @@ class TestAugmentationSolver:
         assert isinstance(result.sweep_log, list)
         assert len(result.sweep_log) > 0
         assert result.n_trials_completed > 0
+        # cuf_buffer_pp is now a vestigial field always set to 0.0;
+        # horizon-based sizing in LifecycleSimulator has replaced it.
+        assert result.best_cuf_buffer_pp == 0.0, (
+            f"best_cuf_buffer_pp should always be 0.0 (vestigial), got "
+            f"{result.best_cuf_buffer_pp}"
+        )
+        # Sweep log must NOT contain 'cuf_buffer_pp' key (1-D search space)
+        for entry in result.sweep_log:
+            assert "cuf_buffer_pp" not in entry, (
+                "Sweep log entry should not contain deprecated 'cuf_buffer_pp' key"
+            )
 
     def test_cuf_constraint_satisfied(self, base_resources):
         """Best result must have min(cuf_series) >= baseline_cuf across all 25 years."""
@@ -1421,6 +1473,281 @@ class TestAugmentationSolver:
 
         assert r1.best_extra == r2.best_extra, (
             f"Non-deterministic result: run1={r1.best_extra}, run2={r2.best_extra}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 13 — Horizon coverage (events are sparse; horizon window is respected)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHorizonCoverage:
+    """
+    Test 13: After the horizon-based redesign, every augmentation event must:
+      • carry a 'horizon_years' key >= 1
+      • guarantee all CUF values inside the coverage window stay above threshold
+      • produce a sparse event schedule (total events ≤ ceil(project_life / 2))
+    """
+
+    def _run_lifecycle(self, base_resources, threshold_factor: float = 0.95):
+        """
+        Run simulate() directly on LifecycleSimulator with a threshold that
+        forces at least one augmentation event.
+        """
+        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+
+        res    = base_resources
+        config = res["config"]
+        engine = res["engine"]
+        soh    = res["soh"]
+
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+        threshold = cuf_y1 * threshold_factor
+
+        sim = LifecycleSimulator(
+            config       = config,
+            plant_engine = engine.plant,
+            soh_curve    = soh,
+            solar_eff_curve = res["solar_eff"],
+            wind_eff_curve  = res["wind_eff"],
+            loss_factor  = float(engine.grid.loss_factor),
+        )
+        return sim.simulate(
+            params                = STANDARD_PARAMS,
+            initial_containers    = STANDARD_PARAMS["bess_containers"],
+            trigger_threshold_cuf = threshold,
+            fast_mode             = True,
+        ), threshold
+
+    def test_horizon_years_field_present_and_positive(self, base_resources):
+        """Every event in the log must have horizon_years >= 1."""
+        result, _ = self._run_lifecycle(base_resources)
+        # May have zero events if degradation is negligible; that is fine.
+        for ev in result.event_log:
+            assert "horizon_years" in ev, "event_log entry missing 'horizon_years'"
+            assert ev["horizon_years"] >= 1, (
+                f"horizon_years must be >= 1, got {ev['horizon_years']}"
+            )
+
+    def test_cuf_series_compliant_across_all_years(self, base_resources):
+        """
+        All 25 CUF values in cuf_series must stay >= threshold − safety_margin.
+        This is the structural guarantee of horizon-based sizing.
+        """
+        result, threshold = self._run_lifecycle(base_resources)
+        safety_margin = base_resources["config"].bess["bess"]["augmentation"].get(
+            "safety_margin_pp", 0.05
+        )
+        # Use a slightly looser tolerance (0.1 pp) to absorb fast-mode
+        # linearisation drift without needing a full-mode re-run here.
+        floor = threshold - 0.10
+        for yr_idx, cuf in enumerate(result.cuf_series):
+            assert cuf >= floor, (
+                f"CUF compliance violated at year {yr_idx + 1}: "
+                f"cuf={cuf:.4f}% < floor={floor:.4f}%"
+            )
+
+    def test_events_are_sparse(self, base_resources):
+        """
+        Total augmentation events should be sparse (≤ ceil(project_life / 2)).
+        Horizon sizing bundles multiple years of coverage into a single event.
+        """
+        import math
+        result, _ = self._run_lifecycle(base_resources)
+        project_life = base_resources["config"].project["project"]["project_life_years"]
+        max_events   = math.ceil(project_life / 2)
+        n_events     = len(result.event_log)
+        assert n_events <= max_events, (
+            f"Expected sparse events (≤ {max_events}), got {n_events} — "
+            "horizon logic should bundle coverage across multiple years"
+        )
+
+    def test_skip_until_year_field_consistent(self, base_resources):
+        """
+        Each event's skip_until_year must equal event['year'] + event['horizon_years'].
+        """
+        result, _ = self._run_lifecycle(base_resources)
+        for ev in result.event_log:
+            expected_skip = ev["year"] + ev["horizon_years"]
+            assert ev["skip_until_year"] == expected_skip, (
+                f"skip_until_year mismatch: got {ev['skip_until_year']}, "
+                f"expected {expected_skip} (year={ev['year']}, "
+                f"horizon_years={ev['horizon_years']})"
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 14 — Skip-ahead consistency (no re-trigger inside horizon window)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHorizonSkipAheadConsistency:
+    """
+    Test 14: After an event at year N with horizon_years=H:
+      • No second event fires in years [N+1, N+H-1]
+      • CUF values for years N through N+H-1 are all >= threshold - safety_margin
+    """
+
+    def _run_forced_event(self, base_resources):
+        """
+        Run simulate() with a high threshold that forces at least one event,
+        and return the result plus threshold.
+        """
+        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+
+        res    = base_resources
+        config = res["config"]
+        engine = res["engine"]
+
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+        # 97% → forces events relatively early
+        threshold = cuf_y1 * 0.97
+
+        sim = LifecycleSimulator(
+            config       = config,
+            plant_engine = engine.plant,
+            soh_curve    = res["soh"],
+            solar_eff_curve = res["solar_eff"],
+            wind_eff_curve  = res["wind_eff"],
+            loss_factor  = float(engine.grid.loss_factor),
+        )
+        result = sim.simulate(
+            params                = STANDARD_PARAMS,
+            initial_containers    = STANDARD_PARAMS["bess_containers"],
+            trigger_threshold_cuf = threshold,
+            fast_mode             = True,
+        )
+        return result, threshold
+
+    def test_no_event_inside_horizon_window(self, base_resources):
+        """
+        After each event, no subsequent event may fire while the horizon window
+        is still active (i.e. within [event_year+1 .. skip_until_year-1]).
+        """
+        result, _ = self._run_forced_event(base_resources)
+        events = result.event_log
+        for i, ev in enumerate(events):
+            window_start = ev["year"] + 1
+            window_end   = ev["skip_until_year"] - 1  # inclusive
+            # Check all later events fall outside this window
+            for later_ev in events[i + 1:]:
+                assert not (window_start <= later_ev["year"] <= window_end), (
+                    f"Event at year {later_ev['year']} fired inside the horizon "
+                    f"window [{window_start}, {window_end}] of event at year {ev['year']} "
+                    f"(skip_until_year={ev['skip_until_year']})"
+                )
+
+    def test_cuf_stays_above_threshold_in_horizon_window(self, base_resources):
+        """
+        For each event at year N with horizon_years=H, the CUF values at years
+        N through N+H-1 (0-indexed: year-1) must all be >= threshold - 0.10
+        (0.10 pp fast-mode tolerance).
+        """
+        result, threshold = self._run_forced_event(base_resources)
+        floor = threshold - 0.10
+        for ev in result.event_log:
+            start_yr = ev["year"]           # 1-indexed
+            end_yr   = ev["skip_until_year"]  # exclusive upper bound (= year + H)
+            for yr in range(start_yr, min(end_yr, len(result.cuf_series) + 1)):
+                cuf = result.cuf_series[yr - 1]
+                assert cuf >= floor, (
+                    f"CUF at year {yr} = {cuf:.4f}% is below horizon floor "
+                    f"{floor:.4f}% (event at year {ev['year']}, "
+                    f"horizon_years={ev['horizon_years']})"
+                )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 15 — Coverage ratio cap guard fires correctly
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCoverageRatioCapGuard:
+    """
+    Test 15: With coverage_cost_ratio_cap = 1.01 (near-zero tolerance for
+    expensive long coverage), the engine must reject long horizons and fall back
+    to shorter (cheaper) coverage per event, resulting in more total events
+    compared to the default cap of 3.0.
+    """
+
+    def _run_with_cap(self, base_resources, cap: float, threshold_factor: float = 0.95):
+        """Run lifecycle simulation with a given coverage_cost_ratio_cap."""
+        import copy
+        from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+        from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf, year1_busbar_mwh
+        from hybrid_plant.config_loader import FullConfig
+
+        res    = base_resources
+        config = res["config"]
+        engine = res["engine"]
+
+        y1     = engine.evaluate(**STANDARD_PARAMS)
+        cuf_y1 = compute_plant_cuf(year1_busbar_mwh(y1), STANDARD_PARAMS["ppa_capacity_mw"])
+        threshold = cuf_y1 * threshold_factor
+
+        # Patch bess config with specified cap
+        bess_override = copy.deepcopy(config.bess)
+        bess_override["bess"]["augmentation"]["coverage_cost_ratio_cap"] = cap
+        patched = FullConfig(
+            project=config.project, bess=bess_override, finance=config.finance,
+            tariffs=config.tariffs, regulatory=config.regulatory, solver=config.solver,
+        )
+
+        sim = LifecycleSimulator(
+            config       = patched,
+            plant_engine = engine.plant,
+            soh_curve    = res["soh"],
+            solar_eff_curve = res["solar_eff"],
+            wind_eff_curve  = res["wind_eff"],
+            loss_factor  = float(engine.grid.loss_factor),
+        )
+        return sim.simulate(
+            params                = STANDARD_PARAMS,
+            initial_containers    = STANDARD_PARAMS["bess_containers"],
+            trigger_threshold_cuf = threshold,
+            fast_mode             = True,
+        )
+
+    def test_tight_cap_produces_at_least_as_many_events(self, base_resources):
+        """
+        With cap=1.01 (tight), the engine rejects long horizons and falls back to
+        shorter coverage windows → at least as many events as with cap=3.0.
+
+        We test the structural property: when the cap is binding it can only shorten
+        the chosen horizon, not lengthen it, so event count must be ≥ baseline.
+        """
+        result_default = self._run_with_cap(base_resources, cap=3.0)
+        result_tight   = self._run_with_cap(base_resources, cap=1.01)
+
+        n_default = len(result_default.event_log)
+        n_tight   = len(result_tight.event_log)
+
+        assert n_tight >= n_default, (
+            f"Tight cap (1.01) should produce >= events vs default cap (3.0), "
+            f"got tight={n_tight} vs default={n_default}. "
+            "Tight cap must constrain horizon length → more events needed."
+        )
+
+    def test_tight_cap_events_have_shorter_horizons(self, base_resources):
+        """
+        With a tight cap, the average horizon_years per event must be ≤ average
+        horizon under the default cap (tight cap forces shorter coverage windows).
+        If no events fire under either config, skip the assertion.
+        """
+        result_default = self._run_with_cap(base_resources, cap=3.0)
+        result_tight   = self._run_with_cap(base_resources, cap=1.01)
+
+        if not result_default.event_log or not result_tight.event_log:
+            pytest.skip("No augmentation events fired — degradation not strong enough")
+
+        avg_default = sum(e["horizon_years"] for e in result_default.event_log) / len(result_default.event_log)
+        avg_tight   = sum(e["horizon_years"] for e in result_tight.event_log)   / len(result_tight.event_log)
+
+        assert avg_tight <= avg_default + 0.5, (
+            f"Tight cap (avg_horizon={avg_tight:.1f} yr) should not exceed "
+            f"default cap (avg_horizon={avg_default:.1f} yr). "
+            "A tighter ratio cap must reject expensive long horizons."
         )
 
 

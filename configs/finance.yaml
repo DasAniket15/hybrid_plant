@@ -12,7 +12,7 @@ capex:
 
   transmission:
     cost_per_km: 1.3e7
-    length_km: 40
+    length_km: 100
 
 
 opex:
