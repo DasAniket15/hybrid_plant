@@ -32,7 +32,8 @@ class AugmentationResult:
     n_feasible             : Feasible trials (CUF-compliant) found.
     """
 
-    cuf_floor_pct:              float
+    cuf_floor_pct:              float        # year-1 base CUF floor (%)
+    cuf_floor_per_year:         np.ndarray   # solar-adjusted per-year floor, shape (project_life,)
     initial_extra_containers:   int
     augmentation_events:        list[dict]         # [{year, containers}, ...]
     cuf_series:                 np.ndarray         # shape (project_life,)

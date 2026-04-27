@@ -180,15 +180,7 @@ class PlantEngine:
                 else:
                     _sd = _wd = 0.0
 
-            # Apply PPA cap proportionally so that any generation cut by the cap
-            # is redistributed to the charging surplus rather than disappearing.
-            _allocated = _sd + _wd
-            if _allocated > ppa_capacity_mw and _allocated > 0:
-                _ppa_frac = ppa_capacity_mw / _allocated
-                _sd *= _ppa_frac
-                _wd *= _ppa_frac
-            _direct = _sd + _wd  # = min(allocated, ppa_capacity_mw)
-
+            _direct = min(_sd + _wd, ppa_capacity_mw)
             re_shortfall[_h] = max(load[_h] - _direct * loss_factor, 0.0)
 
             # Full block: reservation planner treats blocked hours as zero-shortfall
@@ -332,23 +324,13 @@ class PlantEngine:
                 else:
                     solar_d = wind_d = 0.0
 
-            # Apply PPA cap proportionally so that generation cut by the cap is
-            # redirected to the charging surplus rather than silently disappearing.
-            allocated = solar_d + wind_d
-            if allocated > ppa_capacity_mw and allocated > 0:
-                ppa_frac = ppa_capacity_mw / allocated
-                solar_d *= ppa_frac
-                wind_d  *= ppa_frac
-            direct_pre = solar_d + wind_d   # = min(allocated, ppa_capacity_mw)
+            direct_pre = min(solar_d + wind_d, ppa_capacity_mw)   # apply PPA cap
 
             solar_d_meter = solar_d    * loss_factor
             wind_d_meter  = wind_d     * loss_factor
             shortfall     = max(load[h] - direct_pre * loss_factor, 0.0)
 
             # ── 2. BESS charging (from surplus) ──────────────────────────────
-            # Surplus = generation not delivered directly.  Because solar_d / wind_d
-            # have already been scaled down by the PPA cap, any PPA-cut energy is
-            # automatically included here and can charge the BESS before curtailment.
             if bess_charge_source == "solar_only":
                 solar_surplus = solar_pre - solar_d
                 wind_surplus  = 0.0

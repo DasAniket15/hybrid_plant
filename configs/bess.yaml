@@ -1,36 +1,19 @@
 bess:
-
+  augmentation:
+    cost_per_mwh: 0.90e7
+    enabled: true
   container:
+    auxiliary_consumption_mwh_per_day: 0.3
     size_mwh: 5.015
-    auxiliary_consumption_mwh_per_day: 0.300
-
+  degradation:
+    file: data/bess_soh_curve.csv
+    type: soh_curve
+  dispatch_mask:
+    blocked_hours: []
+    enabled: false
   efficiency:
     charge_efficiency: 0.9721
     discharge_efficiency: 0.9384
-
-  degradation:
-    type: "soh_curve"
-    file: "data/bess_soh_curve.csv"
-
-  augmentation:
-    enabled: true
-    cost_per_mwh: 0.90e7
-
   salvage:
     enabled: true
     salvage_rate_per_mwh: 0
-
-  dispatch_mask:
-    enabled: true
-    # Hours listed here are BLOCKED for BESS discharge.
-    # Uses 0-indexed hours: 0 = midnight–1 am, 23 = 11 pm–midnight.
-    # Charging is never affected — only discharge is blocked.
-    # When enabled=false (default), all hours are freely dispatchable.
-    #
-    # Full-block semantics: blocked hours are also excluded from the
-    # ToD reservation planner, so no SOC is ring-fenced for them.
-    # This keeps reserved capacity available for unblocked peak hours.
-    #
-    # Example — block discharge during solar offpeak (hours 11–14):
-    #   blocked_hours: [11, 12, 13, 14]
-    blocked_hours: []

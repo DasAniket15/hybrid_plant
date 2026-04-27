@@ -314,8 +314,8 @@ def print_augmentation_section(aug: AugmentationResult) -> None:
     sep("SECTION 8 — BESS AUGMENTATION LIFECYCLE PLAN")
 
     print(f"\n  {'── CONTRACTUAL CUF FLOOR'}")
-    print(f"  {'CUF Floor (delivery-based, %)':<38} : {round(aug.cuf_floor_pct, 2)}")
-    print(f"  {'Derived from':<38} : Phase-1 Year-1 busbar delivery / (PPA × 8760)")
+    print(f"  {'CUF Floor Year-1 (delivery-based, %)':<38} : {round(aug.cuf_floor_pct, 2)}")
+    print(f"  {'Per-year floor':<38} : CUF_yr1 × solar_eff(year)  [solar-adjusted]")
 
     print(f"\n  {'── OPTIMAL AUGMENTATION SCHEDULE'}")
     print(f"  {'Year-1 Extra Containers (x0)':<38} : {aug.initial_extra_containers}")
@@ -335,15 +335,18 @@ def print_augmentation_section(aug: AugmentationResult) -> None:
     print(f"  {'Feasible trials (CUF-compliant)':<38} : {aug.n_feasible}")
 
     print(f"\n  {'── 25-YEAR CUF TRACKING'}")
-    hdr = f"  {'Yr':>3}  {'CUF (%)':>9}  {'Baseline CUF (%)':>17}  {'Aug Cost (Cr)':>14}  {'Delta Savings (Cr)':>19}"
+    hdr = (f"  {'Yr':>3}  {'CUF (%)':>9}  {'Floor (%)':>10}  "
+           f"{'Baseline (%)':>13}  {'Aug Cost (Cr)':>14}  {'Delta Savings (Cr)':>19}")
     print(f"\n{hdr}")
     sep()
     for y in range(25):
-        cuf_ok = "✓" if aug.cuf_series[y] >= aug.cuf_floor_pct else "✗"
+        yr_floor = aug.cuf_floor_per_year[y]
+        cuf_ok = "✓" if aug.cuf_series[y] >= yr_floor else "✗"
         print(
             f"  {y+1:>3}  "
             f"{aug.cuf_series[y]:>8.2f}% {cuf_ok}  "
-            f"{aug.baseline_cuf_series[y]:>16.2f}%  "
+            f"{yr_floor:>9.2f}%  "
+            f"{aug.baseline_cuf_series[y]:>12.2f}%  "
             f"{aug.yearly_aug_costs[y]/CRORE_TO_RS:>14.4f}  "
             f"{aug.yearly_delta_savings[y]/CRORE_TO_RS:>19.4f}"
         )
