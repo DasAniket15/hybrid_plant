@@ -14,7 +14,7 @@ bess:
 
   augmentation:
     enabled: true
-    cost_per_mwh: 0.60e7
+    cost_per_mwh: 0.90e7
 
   salvage:
     enabled: true
