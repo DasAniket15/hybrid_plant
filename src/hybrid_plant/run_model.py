@@ -745,16 +745,19 @@ if __name__ == "__main__":
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
 
     # ── Phase 2: Augmentation lifecycle optimizer ─────────────────────────────
-    aug_trials = (
-        config.augmentation
-        .get("augmentation_optimizer", {})
-        .get("solver", {})
-        .get("n_trials", 500)
-    )
-    print(f"\nRunning augmentation optimizer ({aug_trials} trials) …")
-    aug_engine = AugmentationEngine(config, data, result)
-    aug_result = aug_engine.run()
-    print_augmentation_section(aug_result)
+    if config.bess["bess"]["augmentation"].get("enabled", True):
+        aug_trials = (
+            config.augmentation
+            .get("augmentation_optimizer", {})
+            .get("solver", {})
+            .get("n_trials", 500)
+        )
+        print(f"\nRunning augmentation optimizer ({aug_trials} trials) …")
+        aug_engine = AugmentationEngine(config, data, result)
+        aug_result = aug_engine.run()
+        print_augmentation_section(aug_result)
+    else:
+        print("\nAugmentation optimizer disabled (bess.yaml augmentation.enabled: false).")
 
     outputs_dir = find_project_root() / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)

@@ -23,7 +23,7 @@ class AugmentationResult:
     augmentation_events    : List of {year, containers} dicts for active events (k_i > 0).
     cuf_series             : Annual plant CUF (%) over 25 years for the optimal schedule.
     baseline_cuf_series    : Annual CUF without any augmentation (for comparison).
-    yearly_aug_costs       : Augmentation CAPEX+OPEX charged each project year (Rs).
+    yearly_aug_costs       : Augmentation CAPEX charged each project year (Rs).
     yearly_delta_savings   : Extra savings vs. no-augmentation baseline per year (Rs).
     total_pv_aug_cost      : NPV of all augmentation costs (Rs).
     savings_npv_gain       : NPV gain in client savings from augmented delivery (Rs).
