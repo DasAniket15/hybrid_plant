@@ -10,7 +10,7 @@ of the working directory the process was started from.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +41,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 class FullConfig:
     """Immutable bundle of all project configuration namespaces."""
 
-    project:    dict[str, Any]
-    regulatory: dict[str, Any]
-    tariffs:    dict[str, Any]
-    bess:       dict[str, Any]
-    finance:    dict[str, Any]
-    solver:     dict[str, Any]
+    project:      dict[str, Any]
+    regulatory:   dict[str, Any]
+    tariffs:      dict[str, Any]
+    bess:         dict[str, Any]
+    finance:      dict[str, Any]
+    solver:       dict[str, Any]
+    augmentation: dict[str, Any] = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,13 +112,15 @@ def load_config() -> FullConfig:
     """
     config_dir = find_project_root() / "configs"
 
+    aug_path = config_dir / "augmentation.yaml"
     config = FullConfig(
-        project    = _load_yaml(config_dir / "project.yaml"),
-        regulatory = _load_yaml(config_dir / "regulatory.yaml"),
-        tariffs    = _load_yaml(config_dir / "tariffs.yaml"),
-        bess       = _load_yaml(config_dir / "bess.yaml"),
-        finance    = _load_yaml(config_dir / "finance.yaml"),
-        solver     = _load_yaml(config_dir / "solver.yaml"),
+        project      = _load_yaml(config_dir / "project.yaml"),
+        regulatory   = _load_yaml(config_dir / "regulatory.yaml"),
+        tariffs      = _load_yaml(config_dir / "tariffs.yaml"),
+        bess         = _load_yaml(config_dir / "bess.yaml"),
+        finance      = _load_yaml(config_dir / "finance.yaml"),
+        solver       = _load_yaml(config_dir / "solver.yaml"),
+        augmentation = _load_yaml(aug_path) if aug_path.exists() else {},
     )
 
     _validate(config)

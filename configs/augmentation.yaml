@@ -1,0 +1,16 @@
+augmentation_optimizer:
+
+  # Search bounds for augmentation decision variables
+  max_extra_containers: 10          # x0: upfront oversizing ceiling
+  max_augmentation_containers: 20   # k_i: containers per future event
+  reasonable_oversize_limit: 5      # x0 above this triggers oversize penalty
+  late_penalty_start_year: 21       # y_i at or above this triggers late penalty
+
+  penalties:
+    lambda1: 5000000    # Rs per augmentation event (sparsity preference)
+    lambda2: 2000000    # Rs per container-year past late_penalty_start_year
+    lambda3: 1000000    # Rs per container above reasonable_oversize_limit
+
+  solver:
+    n_trials: 500
+    random_seed: 42
