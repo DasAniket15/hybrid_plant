@@ -22,6 +22,30 @@ from hybrid_plant.constants import HOURS_PER_YEAR, KWH_TO_MWH
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Degradation curve helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def operating_value(curve: dict[int, float], age_or_year: int) -> float:
+    """
+    Return the operating efficiency/SOH value for a given project year using
+    the end-of-year curve convention.
+
+    curve[N] = residual value at end of year N (after N years of degradation).
+    The operating value DURING year N is the start-of-year value:
+      Year 1 → 1.0 (fresh)
+      Year N (N≥2) → curve[N-1]  (= end of prior year)
+      Beyond curve end → clamped at curve[max(curve)]
+    """
+    if age_or_year <= 1:
+        return 1.0
+    lookup = age_or_year - 1
+    if lookup in curve:
+        return curve[lookup]
+    return curve[max(curve)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

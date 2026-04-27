@@ -54,6 +54,7 @@ import optuna
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -116,11 +117,18 @@ class AugmentationEngine:
         self._plant = PlantEngine(config, data)
 
         # ── CUF floor: delivery-based CUF from Phase-1 Year-1 result ─────────
+        # The year-1 CUF is the base floor.  Since solar degrades irreversibly
+        # (and BESS augmentation cannot compensate for it), the per-year floor
+        # is scaled by each year's solar operating efficiency so that the
+        # constraint remains physically achievable throughout the project life.
         ep = fi["energy_projection"]
         ppa_cap = self._sim_params["ppa_capacity_mw"]
-        self._cuf_floor = (
-            ep["delivered_pre_mwh"][0] / (ppa_cap * self._hours_per_year) * 100
-        )
+        cuf_year1 = ep["delivered_pre_mwh"][0] / (ppa_cap * self._hours_per_year) * 100
+        self._cuf_floor = cuf_year1   # kept for display (year-1 base value)
+        self._cuf_floor_per_year = np.array([
+            cuf_year1 * operating_value(self._solar_eff, year)
+            for year in range(1, self._project_life + 1)
+        ])
 
         # ── Baseline (no-augmentation) projection — computed once ─────────────
         self._baseline_proj = self._simulate_lifecycle(x0=0, events=[])
@@ -141,7 +149,7 @@ class AugmentationEngine:
 
     def _cohort_soh(self, cohort_age: int) -> float:
         """SOH for a cohort that is `cohort_age` years old (age 1 = first year of operation)."""
-        return self._soh.get(cohort_age, self._soh[self._max_soh_year])
+        return operating_value(self._soh, cohort_age)
 
     def _cohort_capacity(
         self,
@@ -208,8 +216,8 @@ class AugmentationEngine:
         cuf_arr     = np.zeros(life)
 
         for i, year in enumerate(range(1, life + 1)):
-            solar_eff = self._solar_eff.get(year, 1.0)
-            wind_eff  = self._wind_eff.get(year, 1.0)
+            solar_eff = operating_value(self._solar_eff, year)
+            wind_eff  = operating_value(self._wind_eff,  year)
             total_cont, eff_soh = self._cohort_capacity(year, base_cont, x0, events)
 
             yr = self._plant.simulate(
@@ -364,7 +372,7 @@ class AugmentationEngine:
             proj = self._simulate_lifecycle(x0, events)
 
             # Hard constraint: CUF floor must hold every year
-            if np.any(proj["cuf_series"] < self._cuf_floor):
+            if np.any(proj["cuf_series"] < self._cuf_floor_per_year):
                 return PENALTY
 
             aug_costs = self._compute_yearly_aug_costs(x0, events)
@@ -447,6 +455,7 @@ class AugmentationEngine:
 
         return AugmentationResult(
             cuf_floor_pct             = self._cuf_floor,
+            cuf_floor_per_year        = self._cuf_floor_per_year,
             initial_extra_containers  = x0_opt,
             augmentation_events       = active_events,
             cuf_series                = proj_opt["cuf_series"],
