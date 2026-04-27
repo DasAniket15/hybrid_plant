@@ -45,6 +45,7 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
 
 
@@ -166,9 +167,9 @@ class EnergyProjection:
         meter_arr   = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
-            s = self._solar_1   * self._solar_eff.get(year, 1.0)
-            w = self._wind_1    * self._wind_eff.get(year, 1.0)
-            b = self._battery_1 * self._soh.get(year, 1.0)
+            s = self._solar_1   * operating_value(self._solar_eff, year)
+            w = self._wind_1    * operating_value(self._wind_eff,  year)
+            b = self._battery_1 * operating_value(self._soh,       year)
 
             solar_arr[i]   = s
             wind_arr[i]    = w
@@ -206,9 +207,9 @@ class EnergyProjection:
         meter_arr   = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
-            solar_eff = self._solar_eff.get(year, 1.0)
-            wind_eff  = self._wind_eff.get(year, 1.0)
-            soh       = self._soh.get(year, 1.0)
+            solar_eff = operating_value(self._solar_eff, year)
+            wind_eff  = operating_value(self._wind_eff,  year)
+            soh       = operating_value(self._soh,       year)
 
             yr = self._plant.simulate(
                 solar_capacity_mw  = sp["solar_capacity_mw"] * solar_eff,

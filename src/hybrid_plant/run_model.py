@@ -131,6 +131,12 @@ def print_section3(params, y1, fi, data, energy_engine):
     curtailment      = float(np.sum(y1["curtailment_pre"]))
     total_busbar     = solar_direct_pre + wind_direct_pre + discharge_pre
 
+    charge_pre       = float(np.sum(y1["charge_pre"]))
+    charge_loss      = float(np.sum(y1["charge_loss"]))
+    discharge_loss   = float(np.sum(y1["discharge_loss"]))
+    aux_loss         = float(np.sum(y1["aux_loss"]))
+    end_soc          = float(y1.get("bess_end_soc_mwh", 0.0))
+
     solar_direct_m  = float(np.sum(y1["solar_direct_meter"]))
     wind_direct_m   = float(np.sum(y1["wind_direct_meter"]))
     discharge_m     = float(np.sum(y1["discharge_meter"]))
@@ -145,41 +151,39 @@ def print_section3(params, y1, fi, data, energy_engine):
     raw_solar = float(np.sum(params["solar_capacity_mw"] * data["solar_cuf"]))
     raw_wind  = float(np.sum(params["wind_capacity_mw"]  * data["wind_cuf"]))
 
-    y1_lf1 = energy_engine.plant.simulate(
-        solar_capacity_mw  = params["solar_capacity_mw"],
-        wind_capacity_mw   = params["wind_capacity_mw"],
-        bess_containers    = params["bess_containers"],
-        charge_c_rate      = params["charge_c_rate"],
-        discharge_c_rate   = params["discharge_c_rate"],
-        ppa_capacity_mw    = params["ppa_capacity_mw"],
-        dispatch_priority  = params["dispatch_priority"],
-        bess_charge_source = params["bess_charge_source"],
-        loss_factor        = 1.0,
-    )
-    plant_cuf_num = float(np.sum(
-        np.minimum(
-            y1_lf1["plant_export_pre"] + y1_lf1["curtailment_pre"],
-            params["ppa_capacity_mw"],
-        )
-    ))
+    # Plant CUF — transparent "naive" formula, the single source of truth.
+    plant_cuf_val = compute_cuf(total_busbar, params["ppa_capacity_mw"])
 
-    solar_cuf = compute_cuf(raw_solar, params["solar_capacity_mw"])
-    wind_cuf  = compute_cuf(raw_wind,  params["wind_capacity_mw"])
-    plant_cuf = compute_cuf(plant_cuf_num, params["ppa_capacity_mw"])
+    solar_cuf   = compute_cuf(raw_solar, params["solar_capacity_mw"])
+    wind_cuf    = compute_cuf(raw_wind,  params["wind_capacity_mw"])
     loss_factor = float(y1["loss_factor"])
+    ppa         = params["ppa_capacity_mw"]
 
+    # PPA envelope and utilisation
+    ppa_envelope_mwh = ppa * 8760
+
+    print(f"\n  {'── GENERATION (Raw, Pre-Dispatch)'}")
+    print(f"  {'Raw Solar Generation (MWh)':<38} : {round(raw_solar, 1)}")
+    print(f"  {'Raw Wind Generation (MWh)':<38} : {round(raw_wind, 1)}")
+    print(f"  {'Raw Total Generation (MWh)':<38} : {round(raw_solar + raw_wind, 1)}")
     print(f"\n  {'── BUSBAR (Pre-Loss)'}")
     print(f"  {'Solar Direct (MWh)':<38} : {round(solar_direct_pre, 1)}")
     print(f"  {'Wind Direct (MWh)':<38} : {round(wind_direct_pre, 1)}")
     print(f"  {'BESS Discharge (MWh)':<38} : {round(discharge_pre, 1)}")
     print(f"  {'Total Busbar Delivery (MWh)':<38} : {round(total_busbar, 1)}")
-    print(f"  {'Excess Energy (MWh)':<38} : {round(curtailment, 1)}")
+    print(f"  {'Excess Energy / Curtailment (MWh)':<38} : {round(curtailment, 1)}")
+    print(f"\n  {'── BESS FLOWS (Pre-Loss)'}")
+    print(f"  {'BESS Charging (MWh)':<38} : {round(charge_pre, 1)}")
+    print(f"  {'Charge Loss (ηc=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.charge_eff):<38} : {round(charge_loss, 1)}")
+    print(f"  {'Discharge Loss (ηd=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.discharge_eff):<38} : {round(discharge_loss, 1)}")
+    print(f"  {'Aux Consumption (MWh)':<38} : {round(aux_loss, 1)}")
+    print(f"  {'End-of-Year SOC (MWh)':<38} : {round(end_soc, 1)}")
     print(f"\n  {'── METER (Post-Loss)'}")
+    print(f"  {'Grid Loss Factor':<38} : {round(loss_factor, 4)}")
     print(f"  {'Solar Direct at Meter (MWh)':<38} : {round(solar_direct_m, 1)}")
     print(f"  {'Wind Direct at Meter (MWh)':<38} : {round(wind_direct_m, 1)}")
     print(f"  {'BESS Discharge at Meter (MWh)':<38} : {round(discharge_m, 1)}")
     print(f"  {'Total RE at Meter (MWh)':<38} : {round(total_meter, 1)}")
-    print(f"  {'Grid Loss Factor':<38} : {round(loss_factor, 4)}")
     print(f"\n  {'── LOAD & DISCOM DEPENDENCY'}")
     print(f"  {'Annual Load (MWh)':<38} : {round(annual_load_mwh, 1)}")
     print(f"  {'DISCOM Draw (MWh)':<38} : {round(discom_draw_mwh, 1)}")
@@ -188,7 +192,8 @@ def print_section3(params, y1, fi, data, energy_engine):
     print(f"\n  {'── CAPACITY UTILISATION (CUF)'}")
     print(f"  {'Solar CUF (%)':<38} : {round(solar_cuf, 2) if solar_cuf else 'N/A'}")
     print(f"  {'Wind CUF (%)':<38} : {round(wind_cuf, 2) if wind_cuf else 'N/A'}")
-    print(f"  {'Plant CUF (%) [busbar / PPA×8760]':<38} : {round(plant_cuf, 2) if plant_cuf else 'N/A'}")
+    print(f"  {'PPA Envelope (MWh = PPA×8760)':<38} : {round(ppa_envelope_mwh, 1)}")
+    print(f"  {'Plant CUF (%) = busbar / PPA×8760':<38} : {round(plant_cuf_val, 2)}")
 
 
 def print_section4(fi):

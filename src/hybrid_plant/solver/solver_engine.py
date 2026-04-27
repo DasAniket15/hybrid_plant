@@ -69,6 +69,12 @@ class SolverEngine:
         result = solver.run()
     """
 
+    # Fallback fixed values for future-scope variables
+    _FUTURE_FIXED: dict[str, Any] = {
+        "dispatch_priority":  "solar_first",
+        "bess_charge_source": "solar_only",
+    }
+
     def __init__(
         self,
         config:         FullConfig,
@@ -85,16 +91,12 @@ class SolverEngine:
         self._solver_cfg = sv
         self._dv         = sv["decision_variables"]
 
-        # Instance-level dict of fixed values for future-scope variables.
-        # Initialised here (not as a class variable) to avoid shared mutable state.
-        self._FUTURE_FIXED: dict[str, Any] = {
-            "dispatch_priority":  "solar_first",
-            "bess_charge_source": "solar_only",
-        }
-
         # Override fixed values from YAML where present (future-scope variables only)
-        for key in ("dispatch_priority", "bess_charge_source"):
-            fv = self._dv.get(key, {}).get("fixed_value")
+        for key, yaml_key in [
+            ("dispatch_priority",  "dispatch_priority"),
+            ("bess_charge_source", "bess_charge_source"),
+        ]:
+            fv = self._dv.get(yaml_key, {}).get("fixed_value")
             if fv is not None:
                 self._FUTURE_FIXED[key] = fv
 
@@ -318,7 +320,7 @@ class SolverEngine:
         trials_df = pd.DataFrame(self._trial_log)
         if not trials_df.empty and "savings_npv_cr" in trials_df.columns:
             trials_df = (
-                trials_df[trials_df["feasible"]]
+                trials_df[trials_df["feasible"] == True]
                 .sort_values("savings_npv_cr", ascending=False)
                 .reset_index(drop=True)
             )
@@ -333,6 +335,6 @@ class SolverEngine:
             best_landed_tariff_y1 = finance["landed_tariff_series"][0],
             all_trials            = trials_df,
             full_result           = full_result,
-            n_trials_completed    = len(study.trials),
+            n_trials_completed    = n_trials,
             n_trials_feasible     = n_feasible,
         )

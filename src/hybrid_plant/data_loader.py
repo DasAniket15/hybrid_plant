@@ -18,7 +18,44 @@ import pandas as pd
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import HOURS_PER_YEAR, KWH_TO_MWH
+from hybrid_plant.constants import HOURS_PER_YEAR, MWH_TO_KWH
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Degradation curve convention
+# ─────────────────────────────────────────────────────────────────────────────
+
+def operating_value(curve: dict[int, float], age_or_year: int) -> float:
+    """
+    Return the 'operating' efficiency/SOH value for a given project year or
+    cohort age, using the **end-of-year** curve convention.
+
+    Convention
+    ──────────
+    The input curve contains **end-of-year** values: ``curve[N]`` is the
+    residual efficiency/SOH at the *end* of year N, i.e. after N years of
+    degradation have accumulated.
+
+    The **operating** value DURING a year is the start-of-year value:
+      • Year 1 (or age 1) → 1.0  (fresh, no degradation has occurred yet)
+      • Year N (N ≥ 2)    → ``curve[N - 1]``  (= end of prior year)
+      • Beyond curve end  → clamped at ``curve[max(curve)]``
+
+    Parameters
+    ----------
+    curve       : dict mapping year/age (int, 1-indexed) → fraction [0–1].
+    age_or_year : 1-indexed project year or cohort age.
+
+    Returns
+    -------
+    float — operating value for that year/age.
+    """
+    if age_or_year <= 1:
+        return 1.0
+    lookup = age_or_year - 1
+    if lookup in curve:
+        return curve[lookup]
+    return curve[max(curve)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +136,7 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
     # ── Load profile ─────────────────────────────────────────────────────────
     load_profile = _load_csv_column(_resolve(load_cfg["source_file"]))
     if load_cfg["unit"].lower() == "kwh":
-        load_profile = load_profile * KWH_TO_MWH   # kWh → MWh
+        load_profile = load_profile / MWH_TO_KWH   # kWh → MWh
     _validate_8760(load_profile, "Load profile")
 
     # ── Degradation curves ───────────────────────────────────────────────────
