@@ -14,10 +14,7 @@ bess:
 
   augmentation:
     enabled: true
-    restore_to_percent_of_year1: 100
-    minimum_augmentation_containers: 1
     cost_per_mwh: 0.60e7
-    opex_percent_of_capex: 2.0
 
   salvage:
     enabled: true

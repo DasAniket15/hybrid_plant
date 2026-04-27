@@ -92,7 +92,6 @@ class AugmentationEngine:
         bess_cfg = config.bess["bess"]
         self._container_size   = float(bess_cfg["container"]["size_mwh"])
         self._aug_cost_per_mwh = float(bess_cfg["augmentation"]["cost_per_mwh"])
-        self._aug_opex_pct     = float(bess_cfg["augmentation"]["opex_percent_of_capex"]) / 100.0
 
         # ── Augmentation optimizer config ─────────────────────────────────────
         self._aug_cfg = config.augmentation.get("augmentation_optimizer", {})
@@ -257,35 +256,23 @@ class AugmentationEngine:
         events: list[tuple[int, int]],
     ) -> np.ndarray:
         """
-        Return per-year augmentation costs (CAPEX + O&M) as an Rs array, shape (project_life,).
+        Return per-year augmentation CAPEX as an Rs array, shape (project_life,).
 
-        x0 CAPEX is charged at Year 1 (t=1); augmentation CAPEX at their event year.
-        O&M is charged annually from the deployment year onward.
+        x0 CAPEX is charged at Year 1 (index 0); each event's CAPEX at its event year.
         """
         life  = self._project_life
         size  = self._container_size
         cpm   = self._aug_cost_per_mwh
-        opct  = self._aug_opex_pct
         costs = np.zeros(life)
 
-        # x0 oversizing CAPEX at Year 1 (index 0)
         if x0 > 0:
-            x0_capex = x0 * size * cpm
-            costs[0] += x0_capex
-            x0_opex  = x0_capex * opct
-            for i in range(life):
-                costs[i] += x0_opex
+            costs[0] += x0 * size * cpm
 
-        # Future augmentation events
         for ev_year, ev_k in events:
             if ev_k > 0:
-                ev_capex = ev_k * size * cpm
-                idx = ev_year - 1          # 0-indexed
+                idx = ev_year - 1
                 if 0 <= idx < life:
-                    costs[idx] += ev_capex
-                ev_opex = ev_capex * opct
-                for i in range(idx, life):
-                    costs[i] += ev_opex
+                    costs[idx] += ev_k * size * cpm
 
         return costs
 
