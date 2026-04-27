@@ -29,6 +29,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from hybrid_plant._paths import find_project_root
+from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import load_config
 from hybrid_plant.constants import CRORE_TO_RS
 from hybrid_plant.data_loader import load_timeseries_data
@@ -300,6 +302,50 @@ def print_section7(fi):
             f"{lts[y]:>13.4f}  "
             f"{annual_savings[y]/CRORE_TO_RS:>13.4f}  "
             f"{cumulative/CRORE_TO_RS:>17.4f}"
+        )
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Augmentation dashboard section
+# ─────────────────────────────────────────────────────────────────────────────
+
+def print_augmentation_section(aug: AugmentationResult) -> None:
+    sep("SECTION 8 — BESS AUGMENTATION LIFECYCLE PLAN")
+
+    print(f"\n  {'── CONTRACTUAL CUF FLOOR'}")
+    print(f"  {'CUF Floor (delivery-based, %)':<38} : {round(aug.cuf_floor_pct, 2)}")
+    print(f"  {'Derived from':<38} : Phase-1 Year-1 busbar delivery / (PPA × 8760)")
+
+    print(f"\n  {'── OPTIMAL AUGMENTATION SCHEDULE'}")
+    print(f"  {'Year-1 Extra Containers (x0)':<38} : {aug.initial_extra_containers}")
+    if aug.augmentation_events:
+        for ev in aug.augmentation_events:
+            print(f"  {'  Augmentation Year ' + str(ev['year']):<38} : {ev['containers']} container(s)")
+    else:
+        print(f"  {'  No future augmentation events':<38}")
+
+    print(f"\n  {'── ECONOMICS'}")
+    print(f"  {'Savings NPV Gain (Rs Crore)':<38} : {cr(aug.savings_npv_gain)}")
+    print(f"  {'PV of Augmentation Costs (Rs Crore)':<38} : {cr(aug.total_pv_aug_cost)}")
+    print(f"  {'Net Score (Rs Crore)':<38} : {cr(aug.final_score)}")
+
+    print(f"\n  {'── AUGMENTATION SOLVER STATS'}")
+    print(f"  {'Trials completed':<38} : {aug.n_trials}")
+    print(f"  {'Feasible trials (CUF-compliant)':<38} : {aug.n_feasible}")
+
+    print(f"\n  {'── 25-YEAR CUF TRACKING'}")
+    hdr = f"  {'Yr':>3}  {'CUF (%)':>9}  {'Baseline CUF (%)':>17}  {'Aug Cost (Cr)':>14}  {'Delta Savings (Cr)':>19}"
+    print(f"\n{hdr}")
+    sep()
+    for y in range(25):
+        cuf_ok = "✓" if aug.cuf_series[y] >= aug.cuf_floor_pct else "✗"
+        print(
+            f"  {y+1:>3}  "
+            f"{aug.cuf_series[y]:>8.2f}% {cuf_ok}  "
+            f"{aug.baseline_cuf_series[y]:>16.2f}%  "
+            f"{aug.yearly_aug_costs[y]/CRORE_TO_RS:>14.4f}  "
+            f"{aug.yearly_delta_savings[y]/CRORE_TO_RS:>19.4f}"
         )
     sep()
 
@@ -697,6 +743,18 @@ if __name__ == "__main__":
     sep("SOLVER STATS")
     print(f"\n  {'Trials completed':<38} : {result.n_trials_completed}")
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
+
+    # ── Phase 2: Augmentation lifecycle optimizer ─────────────────────────────
+    aug_trials = (
+        config.augmentation
+        .get("augmentation_optimizer", {})
+        .get("solver", {})
+        .get("n_trials", 500)
+    )
+    print(f"\nRunning augmentation optimizer ({aug_trials} trials) …")
+    aug_engine = AugmentationEngine(config, data, result)
+    aug_result = aug_engine.run()
+    print_augmentation_section(aug_result)
 
     outputs_dir = find_project_root() / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
