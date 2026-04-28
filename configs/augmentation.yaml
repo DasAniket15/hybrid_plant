@@ -1,16 +1,17 @@
 augmentation_optimizer:
 
   # Search bounds for augmentation decision variables
-  max_extra_containers: 10          # x0: upfront oversizing ceiling
-  max_augmentation_containers: 20   # k_i: containers per future event
-  reasonable_oversize_limit: 5      # x0 above this triggers oversize penalty
-  late_penalty_start_year: 21       # y_i at or above this triggers late penalty
+  max_extra_containers: 15           # x0: upfront oversizing ceiling
+  max_augmentation_containers: 25    # k_i: containers per future event
 
-  penalties:
-    lambda1: 5000000    # Rs per augmentation event (sparsity preference)
-    lambda2: 2000000    # Rs per container-year past late_penalty_start_year
-    lambda3: 1000000    # Rs per container above reasonable_oversize_limit
+  solar_oversize:
+    enabled: true
+    max_extra_mwp: 50.0              # upper bound for s0 search (extra solar DC MWp)
+
+  wind_oversize:
+    enabled: false                   # toggleable; leave false by default
+    max_extra_mwp: 20.0
 
   solver:
-    n_trials: 500
+    n_trials: 500                    # increase to 750+ for projects with N_max >= 4
     random_seed: 42
