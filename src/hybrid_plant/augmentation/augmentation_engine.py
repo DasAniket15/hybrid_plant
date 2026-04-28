@@ -51,6 +51,8 @@ from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
+from hybrid_plant.finance.lcoe_model import LCOEModel
+from hybrid_plant.finance.savings_model import SavingsModel
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -104,29 +106,15 @@ class AugmentationEngine:
         self._hours_per_year = config.project["simulation"].get("hours_per_year", 8760)
 
         # ── Finance params ────────────────────────────────────────────────────
-        self._wacc          = config.finance["financing"].get("wacc")
-        # WACC may be stored elsewhere in the config; fall back to a computed
-        # value attached to sim_params if not in finance config.
+        # Caller override first; otherwise compute canonically via LCOEModel.
+        self._wacc = sim_params.get("wacc")
         if self._wacc is None:
-            self._wacc = sim_params.get("wacc")
-        if self._wacc is None:
-            # Last-resort: compute from financing structure (debt/equity weighted).
-            fin = config.finance["financing"]
-            d   = fin["debt_percent"] / 100.0
-            e   = fin["equity_percent"] / 100.0
-            kd  = fin["debt"]["interest_rate_percent"] / 100.0
-            ke  = fin["equity"]["return_on_equity_percent"] / 100.0
-            tax = fin["corporate_tax_rate_percent"] / 100.0
-            self._wacc = d * kd * (1 - tax) + e * ke
+            self._wacc = LCOEModel(config).wacc
 
+        # Caller override first; otherwise derive from SavingsModel (blended ToD tariff).
         self._discom_tariff = sim_params.get("discom_tariff")
         if self._discom_tariff is None:
-            # fallback: read from config if present
-            self._discom_tariff = (
-                config.finance.get("savings", {}).get("discom_tariff")
-                or config.project.get("savings", {}).get("discom_tariff")
-                or 0.0
-            )
+            self._discom_tariff = SavingsModel._weighted_discom_tariff(config)
 
         # ── Solar oversizing economics ────────────────────────────────────────
         capex_cfg = config.finance["capex"]
@@ -363,7 +351,6 @@ class AugmentationEngine:
             raw_events.append((y, k))
 
         active = [(y, k) for y, k in raw_events if k > 0]
-        active.sort(key=lambda e: e[0])
         events = _merge_same_year(active)
 
         # ── Simulate & score ──────────────────────────────────────────────────
@@ -459,7 +446,6 @@ class AugmentationEngine:
             raw_events_opt.append((y, k))
 
         active_opt = [(y, k) for y, k in raw_events_opt if k > 0]
-        active_opt.sort(key=lambda e: e[0])
         events_opt = _merge_same_year(active_opt)
 
         # ── Full re-simulation of optimal schedule ────────────────────────────
