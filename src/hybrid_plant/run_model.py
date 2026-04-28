@@ -30,7 +30,7 @@ import numpy as np
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
-from hybrid_plant.augmentation.augmentation_pre_analysis import AugmentationPreAnalysis
+from hybrid_plant.augmentation.augmentation_pre_analysis import AugmentationPreAnalysis, PreAnalysisResult
 from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import load_config
 from hybrid_plant.constants import CRORE_TO_RS
@@ -725,7 +725,7 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
 # Augmentation lifecycle plot
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_augmentation(result: AugmentationResult, pre, base_containers: int, output_path: Path) -> None:
+def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_containers: int, output_path: Path) -> None:
     tenure = len(result.cuf_series)
     years  = np.arange(1, tenure + 1)
 
@@ -764,7 +764,7 @@ def plot_augmentation(result: AugmentationResult, pre, base_containers: int, out
         k  = ev["containers"]
         cumul_containers[yr - 1:] += k
 
-    ax2.fill_between(years, base_containers, step="pre", alpha=0.4,
+    ax2.fill_between(years, 0, base_containers, step="pre", alpha=0.4,
                      color="lightgrey", label=f"Base ({base_containers})")
     ax2.fill_between(years, base_containers,
                      base_containers + result.initial_extra_containers,
@@ -799,7 +799,7 @@ def plot_augmentation(result: AugmentationResult, pre, base_containers: int, out
     ax3.bar(years, bess_cr, color=C["bess"], alpha=0.8, label="BESS Capex")
     if result.s0_extra_mwp > 0.0:
         solar_bar = np.zeros(tenure)
-        solar_bar[0] = result.pv_solar_oversize_cost / 1e7
+        solar_bar[0] = result.solar_oversize_capex_rs / 1e7
         ax3.bar(years, solar_bar, bottom=bess_cr, color=C["solar"], alpha=0.8,
                 label="Solar Capex")
     delta_cr = result.yearly_delta_savings / 1e7
@@ -830,7 +830,7 @@ def plot_augmentation(result: AugmentationResult, pre, base_containers: int, out
     ax4.axhline(0, color="#333333", linewidth=0.8)
     for bar, val in zip(bars, values):
         va = "bottom" if val >= 0 else "top"
-        offset = 0.02 * (abs(min(values)) + abs(max(values))) if values else 0
+        offset = max(0.1, 0.02 * (abs(min(values)) + abs(max(values)))) if values else 0.1
         ax4.text(
             bar.get_x() + bar.get_width() / 2,
             val + (offset if val >= 0 else -offset),

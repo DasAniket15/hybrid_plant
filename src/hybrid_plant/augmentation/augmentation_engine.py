@@ -458,9 +458,10 @@ class AugmentationEngine:
         )
         delta_savings = delta_meter * 1000.0 * self._discom_tariff
 
-        pv_bess_cost     = self._pv(aug_costs)
-        pv_solar_cost    = (
-            (s0_opt * self._solar_capex_per_mwp) / (1 + self._wacc)
+        pv_bess_cost            = self._pv(aug_costs)
+        solar_oversize_capex_rs = s0_opt * self._solar_capex_per_mwp if s0_opt > 0 else 0.0
+        pv_solar_cost           = (
+            solar_oversize_capex_rs / (1 + self._wacc)
             if s0_opt > 0 else 0.0
         )
         savings_npv_gain = self._pv(delta_savings)
@@ -484,6 +485,7 @@ class AugmentationEngine:
             yearly_delta_savings     = delta_savings,
             total_pv_aug_cost        = pv_bess_cost,
             pv_solar_oversize_cost   = pv_solar_cost,
+            solar_oversize_capex_rs  = solar_oversize_capex_rs,
             savings_npv_gain         = savings_npv_gain,
             final_score              = final_score,
             n_trials                 = len(study.trials),

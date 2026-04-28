@@ -29,7 +29,8 @@ class AugmentationResult:
     yearly_aug_costs       : Augmentation CAPEX charged each project year (Rs).
     yearly_delta_savings   : Extra savings vs. no-augmentation baseline per year (Rs).
     total_pv_aug_cost      : NPV of all augmentation costs (Rs).
-    pv_solar_oversize_cost : PV of solar oversizing capex (Rs).
+    pv_solar_oversize_cost : PV (discounted) of solar oversizing capex (Rs).
+    solar_oversize_capex_rs: Raw undiscounted solar oversizing capex (s0 * capex_per_mwp, Rs).
     savings_npv_gain       : NPV gain in client savings from augmented delivery (Rs).
     final_score            : Net objective value = savings_npv_gain - pv_bess_capex - pv_solar_capex (Rs).
     n_trials               : Total Optuna trials run.
@@ -52,7 +53,8 @@ class AugmentationResult:
     yearly_aug_costs:           np.ndarray         # shape (project_life,)  Rs
     yearly_delta_savings:       np.ndarray         # shape (project_life,)  Rs
     total_pv_aug_cost:          float              # Rs
-    pv_solar_oversize_cost:     float              # Rs
+    pv_solar_oversize_cost:     float              # Rs (discounted PV of solar capex)
+    solar_oversize_capex_rs:    float              # Rs (raw undiscounted solar capex, s0 * capex_per_mwp)
     savings_npv_gain:           float              # Rs
     final_score:                float              # Rs (net objective = savings - capex)
 
