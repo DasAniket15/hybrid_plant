@@ -30,6 +30,7 @@ import numpy as np
 
 from hybrid_plant._paths import find_project_root
 from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+from hybrid_plant.augmentation.augmentation_pre_analysis import AugmentationPreAnalysis
 from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import load_config
 from hybrid_plant.constants import CRORE_TO_RS
@@ -314,8 +315,10 @@ def print_augmentation_section(aug: AugmentationResult) -> None:
     sep("SECTION 8 — BESS AUGMENTATION LIFECYCLE PLAN")
 
     print(f"\n  {'── CONTRACTUAL CUF FLOOR'}")
-    print(f"  {'CUF Floor Year-1 (delivery-based, %)':<38} : {round(aug.cuf_floor_pct, 2)}")
-    print(f"  {'Per-year floor':<38} : CUF_yr1 × solar_eff(year)  [solar-adjusted]")
+    print(f"  {'Fixed CUF Floor (%)':<38} : {round(aug.cuf_floor_fixed_pct, 2)}")
+    solar_label = f"+{aug.s0_extra_mwp:.1f} MWp DC" if aug.s0_extra_mwp > 0.0 else "None"
+    print(f"  {'Solar Oversizing':<38} : {solar_label}")
+    print(f"  {'N_max (shortfall windows)':<38} : {aug.n_max}")
 
     print(f"\n  {'── OPTIMAL AUGMENTATION SCHEDULE'}")
     print(f"  {'Year-1 Extra Containers (x0)':<38} : {aug.initial_extra_containers}")
@@ -328,6 +331,7 @@ def print_augmentation_section(aug: AugmentationResult) -> None:
     print(f"\n  {'── ECONOMICS'}")
     print(f"  {'Savings NPV Gain (Rs Crore)':<38} : {cr(aug.savings_npv_gain)}")
     print(f"  {'PV of Augmentation Costs (Rs Crore)':<38} : {cr(aug.total_pv_aug_cost)}")
+    print(f"  {'PV of Solar Oversize Cost (Rs Crore)':<38} : {cr(aug.pv_solar_oversize_cost)}")
     print(f"  {'Net Score (Rs Crore)':<38} : {cr(aug.final_score)}")
 
     print(f"\n  {'── AUGMENTATION SOLVER STATS'}")
@@ -339,13 +343,13 @@ def print_augmentation_section(aug: AugmentationResult) -> None:
            f"{'Baseline (%)':>13}  {'Aug Cost (Cr)':>14}  {'Delta Savings (Cr)':>19}")
     print(f"\n{hdr}")
     sep()
+    floor = aug.cuf_floor_fixed_pct
     for y in range(25):
-        yr_floor = aug.cuf_floor_per_year[y]
-        cuf_ok = "✓" if aug.cuf_series[y] >= yr_floor else "✗"
+        cuf_ok = "✓" if aug.cuf_series[y] >= floor else "✗"
         print(
             f"  {y+1:>3}  "
             f"{aug.cuf_series[y]:>8.2f}% {cuf_ok}  "
-            f"{yr_floor:>9.2f}%  "
+            f"{floor:>9.2f}%  "
             f"{aug.baseline_cuf_series[y]:>12.2f}%  "
             f"{aug.yearly_aug_costs[y]/CRORE_TO_RS:>14.4f}  "
             f"{aug.yearly_delta_savings[y]/CRORE_TO_RS:>19.4f}"
@@ -716,6 +720,133 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
     print(f"  Day-250 dispatch plot saved → {output_path}")
     plt.close()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Augmentation lifecycle plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_augmentation(result: AugmentationResult, pre, base_containers: int, output_path: Path) -> None:
+    tenure = len(result.cuf_series)
+    years  = np.arange(1, tenure + 1)
+
+    C = {"solar": "#f4a832", "wind": "#4c9be8", "bess": "#66bb6a",
+         "discom": "#ef5350", "savings": "#26a69a", "cumul": "#ab47bc"}
+
+    fig = plt.figure(figsize=(18, 14))
+    fig.suptitle(
+        "BESS Augmentation Lifecycle Plan",
+        fontsize=13, fontweight="bold", y=0.99,
+    )
+
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.32)
+
+    # ── Panel 1: CUF Trajectory ───────────────────────────────────────────────
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.plot(years, pre.baseline_cuf_series, color="grey", linestyle="--",
+             linewidth=1.5, label="Baseline")
+    ax1.plot(years, result.cuf_series, color=C["bess"], linewidth=2, label="Augmented")
+    ax1.axhline(result.cuf_floor_fixed_pct, color=C["discom"], linestyle="--",
+                linewidth=1.5, label=f"Fixed CUF Floor ({result.cuf_floor_fixed_pct:.2f}%)")
+    for (s_yr, e_yr) in result.shortfall_windows:
+        ax1.axvspan(s_yr - 0.5, e_yr + 0.5, color=C["discom"], alpha=0.1)
+    ax1.set_title("CUF Trajectory", fontweight="bold")
+    ax1.set_xlabel("Year")
+    ax1.set_ylabel("CUF (%)")
+    ax1.legend(fontsize=8)
+    ax1.grid(True, alpha=0.25)
+
+    # ── Panel 2: Deployment Timeline ─────────────────────────────────────────
+    ax2 = fig.add_subplot(gs[0, 1])
+    total_y1 = base_containers + result.initial_extra_containers
+    cumul_containers = np.full(tenure, float(total_y1))
+    for ev in result.augmentation_events:
+        yr = ev["year"]
+        k  = ev["containers"]
+        cumul_containers[yr - 1:] += k
+
+    ax2.fill_between(years, base_containers, step="pre", alpha=0.4,
+                     color="lightgrey", label=f"Base ({base_containers})")
+    ax2.fill_between(years, base_containers,
+                     base_containers + result.initial_extra_containers,
+                     step="pre", alpha=0.6, color=C["bess"],
+                     label=f"x0 at Year 1 (+{result.initial_extra_containers})")
+    prev = np.full(tenure, float(base_containers + result.initial_extra_containers))
+    for ev in result.augmentation_events:
+        yr = ev["year"]
+        k  = ev["containers"]
+        next_level = prev.copy()
+        next_level[yr - 1:] += k
+        ax2.fill_between(years, prev, next_level, step="pre", alpha=0.6,
+                         color=C["savings"], label=f"Year {yr} +{k}")
+        prev = next_level
+    ax2.step(years, cumul_containers, where="pre", color="#333333", linewidth=1.5)
+    if result.s0_extra_mwp > 0:
+        ax2.annotate(
+            f"+{result.s0_extra_mwp:.1f} MWp DC solar",
+            xy=(1, total_y1), xytext=(3, total_y1 + 1),
+            ha="left", fontsize=8, color=C["solar"],
+            arrowprops=dict(arrowstyle="->", color=C["solar"], lw=1),
+        )
+    ax2.set_title("Deployment Timeline", fontweight="bold")
+    ax2.set_xlabel("Year")
+    ax2.set_ylabel("Containers")
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.25)
+
+    # ── Panel 3: Annual Economics ─────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 0])
+    bess_cr = result.yearly_aug_costs / 1e7
+    ax3.bar(years, bess_cr, color=C["bess"], alpha=0.8, label="BESS Capex")
+    if result.s0_extra_mwp > 0.0:
+        solar_bar = np.zeros(tenure)
+        solar_bar[0] = result.pv_solar_oversize_cost / 1e7
+        ax3.bar(years, solar_bar, bottom=bess_cr, color=C["solar"], alpha=0.8,
+                label="Solar Capex")
+    delta_cr = result.yearly_delta_savings / 1e7
+    ax3.plot(years, delta_cr, color=C["savings"], linewidth=2,
+             marker="o", markersize=3, label="Delta Savings")
+    ax3.set_title("Annual Economics", fontweight="bold")
+    ax3.set_xlabel("Year")
+    ax3.set_ylabel("Rs Cr")
+    ax3.legend(fontsize=8)
+    ax3.grid(True, alpha=0.25)
+
+    # ── Panel 4: NPV Waterfall ────────────────────────────────────────────────
+    ax4 = fig.add_subplot(gs[1, 1])
+    labels = ["Savings NPV", "BESS Capex", "Solar Capex", "Net Score"]
+    values = [
+        result.savings_npv_gain / 1e7,
+        -result.total_pv_aug_cost / 1e7,
+        -result.pv_solar_oversize_cost / 1e7,
+        result.final_score / 1e7,
+    ]
+    bar_colors = [
+        C["savings"],
+        C["bess"],
+        C["solar"],
+        C["savings"] if result.final_score >= 0 else "grey",
+    ]
+    bars = ax4.bar(labels, values, color=bar_colors, alpha=0.85, edgecolor="white")
+    ax4.axhline(0, color="#333333", linewidth=0.8)
+    for bar, val in zip(bars, values):
+        va = "bottom" if val >= 0 else "top"
+        offset = 0.02 * (abs(min(values)) + abs(max(values))) if values else 0
+        ax4.text(
+            bar.get_x() + bar.get_width() / 2,
+            val + (offset if val >= 0 else -offset),
+            f"{val:.2f}",
+            ha="center", va=va, fontsize=8,
+        )
+    ax4.set_title("NPV Breakdown", fontweight="bold")
+    ax4.set_ylabel("Rs Cr")
+    ax4.grid(True, alpha=0.25, axis="y")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"  Augmentation plot saved → {output_path}")
+    plt.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -748,6 +879,8 @@ if __name__ == "__main__":
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
 
     # ── Phase 2: Augmentation lifecycle optimizer ─────────────────────────────
+    aug_pre    = None
+    aug_result = None
     if config.bess["bess"]["augmentation"].get("enabled", True):
         aug_trials = (
             config.augmentation
@@ -756,7 +889,17 @@ if __name__ == "__main__":
             .get("n_trials", 500)
         )
         print(f"\nRunning augmentation optimizer ({aug_trials} trials) …")
-        aug_engine = AugmentationEngine(config, data, result)
+        aug_pre = AugmentationPreAnalysis(
+            baseline_ep=fi["energy_projection"],
+            config=config,
+            ppa_capacity_mw=params["ppa_capacity_mw"],
+        ).run()
+        aug_engine = AugmentationEngine(
+            pre=aug_pre,
+            sim_params=y1["sim_params"],
+            config=config,
+            data=data,
+        )
         aug_result = aug_engine.run()
         print_augmentation_section(aug_result)
     else:
@@ -767,3 +910,8 @@ if __name__ == "__main__":
 
     plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
     plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")
+    if aug_result is not None and aug_pre is not None:
+        plot_augmentation(
+            aug_result, aug_pre, params["bess_containers"],
+            outputs_dir / "augmentation.png",
+        )
