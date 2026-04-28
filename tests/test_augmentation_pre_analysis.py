@@ -24,11 +24,6 @@ from hybrid_plant.augmentation.augmentation_pre_analysis import (
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _MockAugConfig(dict):
-    """dict subclass that also exposes .get() — behaves like the YAML-loaded dict."""
-    pass
-
-
 class _MockConfig:
     """Minimal mock for FullConfig, providing dict-style .augmentation and .project."""
 
@@ -39,6 +34,7 @@ class _MockConfig:
         max_augmentation_containers: int = 20,
         solar_oversize_enabled: bool = False,
         solar_oversize_max_mwp: float = 0.0,
+        hours_per_year: int = 8760,
     ) -> None:
         aug_optimizer = {
             "max_extra_containers": max_extra_containers,
@@ -53,7 +49,8 @@ class _MockConfig:
             "solar_oversize": solar_oversize,
         }
         self.project = {
-            "project": {"project_life_years": project_life}
+            "project": {"project_life_years": project_life},
+            "simulation": {"hours_per_year": hours_per_year},
         }
 
 
@@ -65,10 +62,7 @@ def _make_baseline_ep(cuf_pct_series: np.ndarray, ppa_cap: float = 100.0) -> dic
     delivered_meter_mwh[t] = cuf_pct_series[t] / 100 * ppa_cap * 8760
     """
     delivered = cuf_pct_series / 100.0 * ppa_cap * 8760.0
-    return {
-        "delivered_meter_mwh": delivered,
-        "ppa_capacity_mw": ppa_cap,
-    }
+    return {"delivered_meter_mwh": delivered}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,10 +106,10 @@ class TestContiguousWindows:
 
 class TestAugmentationPreAnalysis:
 
-    def _run(self, cuf_series: np.ndarray, **config_kwargs) -> PreAnalysisResult:
-        ep     = _make_baseline_ep(cuf_series)
+    def _run(self, cuf_series: np.ndarray, ppa_cap: float = 100.0, **config_kwargs) -> PreAnalysisResult:
+        ep     = _make_baseline_ep(cuf_series, ppa_cap=ppa_cap)
         config = _MockConfig(**config_kwargs)
-        return AugmentationPreAnalysis(ep, config).run()
+        return AugmentationPreAnalysis(ep, config, ppa_capacity_mw=ppa_cap).run()
 
     # ── CUF floor ────────────────────────────────────────────────────────────
 
@@ -225,6 +219,14 @@ class TestAugmentationPreAnalysis:
         result = self._run(cuf, project_life=3)
         assert isinstance(result, PreAnalysisResult)
         assert isinstance(result.search_bounds, SearchBounds)
+
+    # ── Empty delivered array guard ──────────────────────────────────────────
+
+    def test_empty_delivered_raises_value_error(self):
+        ep     = {"delivered_meter_mwh": np.array([])}
+        config = _MockConfig(project_life=25)
+        with pytest.raises(ValueError, match="must not be empty"):
+            AugmentationPreAnalysis(ep, config, ppa_capacity_mw=100.0).run()
 
     # ── Full scenario: typical 25-year degradation ───────────────────────────
 

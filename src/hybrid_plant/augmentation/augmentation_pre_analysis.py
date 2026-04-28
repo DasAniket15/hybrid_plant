@@ -71,7 +71,7 @@ def _contiguous_windows(mask: np.ndarray) -> list[tuple[int, int]]:
     """Return list of (start_year, end_year) 1-indexed for contiguous True runs."""
     windows: list[tuple[int, int]] = []
     in_window = False
-    start: int | None = None
+    start: int = 0  # assigned before use: only read when in_window is True
     for i, v in enumerate(mask):
         year = i + 1  # 1-indexed
         if v and not in_window:
@@ -100,7 +100,6 @@ class AugmentationPreAnalysis:
         Dict returned by EnergyProjection.project(), or a superset thereof.
         Must contain:
           - ``delivered_meter_mwh``  : np.ndarray, shape (tenure,)
-          - ``ppa_capacity_mw``      : float — PPA contracted capacity (MW)
     config : object
         Config object with the following attribute paths:
           - config.augmentation["augmentation_optimizer"]["max_extra_containers"]
@@ -108,11 +107,16 @@ class AugmentationPreAnalysis:
           - config.augmentation.get("solar_oversize", {})
               -> {"enabled": bool, "max_extra_mwp": float}
           - config.project["project"]["project_life_years"]   (= tenure)
+          - config.project["simulation"].get("hours_per_year", 8760)
+    ppa_capacity_mw : float
+        PPA contracted capacity in MW.  Passed explicitly so that this class
+        does not depend on the layout of EnergyProjection.project() output.
     """
 
-    def __init__(self, baseline_ep: dict, config) -> None:
+    def __init__(self, baseline_ep: dict, config, ppa_capacity_mw: float) -> None:
         self._baseline_ep = baseline_ep
         self._config = config
+        self._ppa_capacity_mw = float(ppa_capacity_mw)
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -134,8 +138,12 @@ class AugmentationPreAnalysis:
 
         # ── 1. Baseline CUF series ────────────────────────────────────────────
         delivered = np.asarray(ep["delivered_meter_mwh"], dtype=float)
-        ppa_cap   = float(ep["ppa_capacity_mw"])
-        hours_per_year = 8760.0
+        if len(delivered) == 0:
+            raise ValueError("baseline_ep['delivered_meter_mwh'] must not be empty.")
+        ppa_cap        = self._ppa_capacity_mw
+        hours_per_year = float(
+            config.project["simulation"].get("hours_per_year", 8760)
+        )
 
         cuf_series = delivered / (ppa_cap * hours_per_year) * 100.0
 
