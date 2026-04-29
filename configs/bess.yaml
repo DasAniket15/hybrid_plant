@@ -14,41 +14,10 @@ bess:
 
   augmentation:
     enabled: true
-
-    # REMOVED: solver_aware — two-pass solver-aware mode has been removed
-    # REMOVED: mode         — stub; only "optimized" was ever implemented
-    # REMOVED: fixed_schedule — stub for future use; never implemented
-
-    cost_per_mwh: 0.60e7               # Rs per MWh of new container capacity (lump-sum procurement)
-
-    # Trigger fires when cuf_t < trigger_threshold_cuf − trigger_tolerance_pp.
-    # Expressed in PERCENTAGE POINTS.  Oversizing provides real headroom, so a
-    # small non-zero value of 0.05 pp is appropriate — tight enough to catch
-    # genuine SOH-driven degradation while ignoring floating-point noise.
-    trigger_tolerance_pp: 0.05         # percentage points
-
-    # k-search range.
-    #   minimum: smallest number of containers added at any single event.
-    #   maximum: pure safety cap — warns if the minimum-k search must hit this
-    #            without reaching the restoration target.  NOT a target itself.
+    restore_to_percent_of_year1: 100
     minimum_augmentation_containers: 1
-    max_augmentation_containers_per_event: 50   # safety cap; emits warning if hit
-    max_augmentation_events: 3                  # total events allowed across 25-year life
-
-    # ── Oversize sweep (post-processing, single-pass) ────────────────────────
-    # After Pass-1 solver selects B* containers, a sweep tries B* + extra for
-    # extra = 0, 1, 2, … and picks the candidate that maximises savings_npv.
-    max_oversize_containers: 500       # hard cap on `extra`; safety stop if sweep diverges
-    oversize_patience: 3               # consecutive non-improving steps → stop early
-    oversize_npv_tolerance_rs: 1000    # Rs; improvement below this is treated as "no change"
-
-    # ── Per-event payback filter ─────────────────────────────────────────────
-    # Before committing an augmentation event, test whether its NPV is positive
-    # given the remaining project life.  Events that fail are skipped and logged.
-    # proxy_rate = (discom_tariff_y1 − pass1_lcoe) × 1000  [Rs per MWh]
-    # Uses Y1 values; does not project tariff escalation (first-order screen).
-    payback_filter:
-      enabled: false
+    cost_per_mwh: 0.90e7
+    opex_percent_of_capex: 2.0
 
   salvage:
     enabled: true

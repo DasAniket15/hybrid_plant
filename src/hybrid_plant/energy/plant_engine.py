@@ -158,42 +158,37 @@ class PlantEngine:
         discharge_power_cap = discharge_c_rate * energy_capacity
 
         # ── Pre-compute RE-only shortfall and charging surplus (BESS-independent) ──
-        # Used by the ToD reservation planner; computed once, O(8760).
-        re_shortfall = np.empty(hours)
-        re_surplus   = np.empty(hours)
-        for _h in range(hours):
-            _s   = solar_capacity_mw * solar_profile[_h]
-            _w   = wind_capacity_mw  * wind_profile[_h]
-            _req = load[_h] / loss_factor
+        # Used by the ToD reservation planner; computed once, vectorised.
+        _s   = solar_capacity_mw * solar_profile
+        _w   = wind_capacity_mw  * wind_profile
+        _req = load / loss_factor
 
-            if dispatch_priority == "solar_first":
-                _sd = min(_s, _req)
-                _wd = min(_w, _req - _sd)
-            elif dispatch_priority == "wind_first":
-                _wd = min(_w, _req)
-                _sd = min(_s, _req - _wd)
-            else:  # proportional
-                _tot = _s + _w
-                if _tot > 0:
-                    _sd = min(_s, _req * _s / _tot)
-                    _wd = min(_w, _req * _w / _tot)
-                else:
-                    _sd = _wd = 0.0
+        if dispatch_priority == "solar_first":
+            _sd = np.minimum(_s, _req)
+            _wd = np.minimum(_w, _req - _sd)
+        elif dispatch_priority == "wind_first":
+            _wd = np.minimum(_w, _req)
+            _sd = np.minimum(_s, _req - _wd)
+        else:  # proportional
+            _tot     = _s + _w
+            _ratio_s = np.where(_tot > 0, _s / np.where(_tot > 0, _tot, 1.0), 0.0)
+            _sd      = np.minimum(_s, _req * _ratio_s)
+            _wd      = np.minimum(_w, _req * (1.0 - _ratio_s))
 
-            _direct = min(_sd + _wd, ppa_capacity_mw)
-            re_shortfall[_h] = max(load[_h] - _direct * loss_factor, 0.0)
+        _direct      = np.minimum(_sd + _wd, ppa_capacity_mw)
+        re_shortfall = np.maximum(load - _direct * loss_factor, 0.0)
 
-            # Full block: reservation planner treats blocked hours as zero-shortfall
-            # so no SOC is ring-fenced for hours that will never discharge.
-            if (_h % 24) not in self.discharge_allowed_hods:
-                re_shortfall[_h] = 0.0
+        # Full block: reservation planner treats blocked hours as zero-shortfall
+        # so no SOC is ring-fenced for hours that will never discharge.
+        _hod_arr = np.arange(hours) % 24
+        re_shortfall[~np.isin(_hod_arr, list(self.discharge_allowed_hods))] = 0.0
 
-            if bess_charge_source == "solar_only":
-                re_surplus[_h] = max(_s - _sd, 0.0)
-            elif bess_charge_source == "wind_only":
-                re_surplus[_h] = max(_w - _wd, 0.0)
-            else:  # solar_and_wind
-                re_surplus[_h] = max(_s - _sd, 0.0) + max(_w - _wd, 0.0)
+        if bess_charge_source == "solar_only":
+            re_surplus = np.maximum(_s - _sd, 0.0)
+        elif bess_charge_source == "wind_only":
+            re_surplus = np.maximum(_w - _wd, 0.0)
+        else:  # solar_and_wind
+            re_surplus = np.maximum(_s - _sd, 0.0) + np.maximum(_w - _wd, 0.0)
 
         # ── State ────────────────────────────────────────────────────────────
         soc: float = 0.0
@@ -419,11 +414,7 @@ class PlantEngine:
             discharge_post = discharge_pre  * loss_factor          # post-losses at meter
 
             discharge[h]      = discharge_pre
-            # True round-trip loss = discharge_raw - discharge_pre = discharge_raw × (1 - η_d).
-            # Previously used `discharge_pre × (1 - η_d)` which under-reported the loss by
-            # a factor of η_d (a cosmetic bug — not used downstream in any economic calc,
-            # but the returned diagnostic array was wrong).
-            discharge_loss[h] = discharge_raw * (1 - self.discharge_eff)
+            discharge_loss[h] = discharge_raw * (1 - self.discharge_eff)  # loss on pre-eff energy
             export[h]         = direct_pre + discharge_pre
 
             solar_direct[h]       = solar_d
