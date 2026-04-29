@@ -32,21 +32,20 @@ class _MockConfig:
         project_life: int = 25,
         max_extra_containers: int = 10,
         max_augmentation_containers: int = 20,
-        solar_oversize_enabled: bool = False,
-        solar_oversize_max_mwp: float = 0.0,
+        solar_aug_enabled: bool = False,
+        solar_aug_max_mwp_per_event: float = 0.0,
         hours_per_year: int = 8760,
     ) -> None:
         aug_optimizer = {
             "max_extra_containers": max_extra_containers,
             "max_augmentation_containers": max_augmentation_containers,
-        }
-        solar_oversize = {
-            "enabled": solar_oversize_enabled,
-            "max_extra_mwp": solar_oversize_max_mwp,
+            "solar_augmentation": {
+                "enabled": solar_aug_enabled,
+                "max_extra_mwp_per_event": solar_aug_max_mwp_per_event,
+            },
         }
         self.augmentation = {
             "augmentation_optimizer": aug_optimizer,
-            "solar_oversize": solar_oversize,
         }
         self.project = {
             "project": {"project_life_years": project_life},
@@ -150,7 +149,7 @@ class TestAugmentationPreAnalysis:
         result = self._run(cuf, project_life=6)
         assert result.shortfall_windows == [(2, 2), (4, 4), (6, 6)]
 
-    # ── N_max ────────────────────────────────────────────────────────────────
+    # ── N_max / N_solar_max ──────────────────────────────────────────────────
 
     def test_n_max_minimum_is_1_when_no_shortfall(self):
         cuf = np.array([80.0, 80.0, 80.0])
@@ -167,6 +166,17 @@ class TestAugmentationPreAnalysis:
         cuf = np.array([80.0, 79.0, 80.0, 79.0, 80.0, 79.0])
         result = self._run(cuf, project_life=6)
         assert result.N_max == 3
+
+    def test_n_solar_max_equals_n_max(self):
+        # N_solar_max mirrors N_max — both derived from shortfall windows
+        cuf = np.array([80.0, 79.0, 80.5, 78.0, 77.0])
+        result = self._run(cuf, project_life=5)
+        assert result.N_solar_max == result.N_max
+
+    def test_n_solar_max_minimum_is_1(self):
+        cuf = np.array([80.0, 80.0, 80.0])
+        result = self._run(cuf, project_life=3)
+        assert result.N_solar_max == 1
 
     # ── baseline_cuf_series ──────────────────────────────────────────────────
 
@@ -202,15 +212,23 @@ class TestAugmentationPreAnalysis:
         result = self._run(cuf, project_life=3, max_augmentation_containers=15)
         assert result.search_bounds.k_max == 15
 
-    def test_s0_max_zero_when_solar_oversize_disabled(self):
+    def test_solar_event_max_mwp_zero_when_solar_aug_disabled(self):
         cuf = np.array([80.0, 78.0, 76.0])
-        result = self._run(cuf, project_life=3, solar_oversize_enabled=False, solar_oversize_max_mwp=50.0)
-        assert result.search_bounds.s0_max == 0.0
+        result = self._run(
+            cuf, project_life=3,
+            solar_aug_enabled=False,
+            solar_aug_max_mwp_per_event=50.0,
+        )
+        assert result.search_bounds.solar_event_max_mwp == 0.0
 
-    def test_s0_max_from_config_when_enabled(self):
+    def test_solar_event_max_mwp_from_config_when_enabled(self):
         cuf = np.array([80.0, 78.0, 76.0])
-        result = self._run(cuf, project_life=3, solar_oversize_enabled=True, solar_oversize_max_mwp=50.0)
-        assert result.search_bounds.s0_max == pytest.approx(50.0)
+        result = self._run(
+            cuf, project_life=3,
+            solar_aug_enabled=True,
+            solar_aug_max_mwp_per_event=50.0,
+        )
+        assert result.search_bounds.solar_event_max_mwp == pytest.approx(50.0)
 
     # ── Return type ──────────────────────────────────────────────────────────
 
@@ -242,5 +260,6 @@ class TestAugmentationPreAnalysis:
         assert result.fixed_cuf_floor == pytest.approx(year1_cuf)
         assert result.shortfall_windows == [(2, 25)]
         assert result.N_max == 1
+        assert result.N_solar_max == 1
         assert result.search_bounds.year_min == 2
         assert result.search_bounds.year_max == 25

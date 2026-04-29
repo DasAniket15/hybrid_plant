@@ -1,16 +1,13 @@
 augmentation_optimizer:
 
-  # Search bounds for augmentation decision variables
-  max_extra_containers: 15           # x0: upfront oversizing ceiling
-  max_augmentation_containers: 25    # k_i: containers per future event
+  # ── BESS augmentation ────────────────────────────────────────────────────────
+  max_extra_containers: 15           # x0: BESS upfront oversizing ceiling (Year 1)
+  max_augmentation_containers: 25    # k_i: max BESS containers per future event
 
-  solar_oversize:
+  # ── Solar augmentation (event-based, multi-cohort) ───────────────────────────
+  solar_augmentation:
     enabled: true
-    max_extra_mwp: 50.0              # upper bound for s0 search (extra solar DC MWp)
-
-  wind_oversize:
-    enabled: false             # toggleable; implementation deferred — not yet read by engine
-    max_extra_mwp: 20.0
+    max_extra_mwp_per_event: 50.0    # upper bound for solar DC MWp per augmentation event
 
   solver:
     n_trials: 500                    # increase to 750+ for projects with N_max >= 4

@@ -312,46 +312,56 @@ def print_section7(fi):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def print_augmentation_section(aug: AugmentationResult) -> None:
-    sep("SECTION 8 — BESS AUGMENTATION LIFECYCLE PLAN")
+    sep("SECTION 8 — SOLAR + BESS AUGMENTATION LIFECYCLE PLAN")
 
     print(f"\n  {'── CONTRACTUAL CUF FLOOR'}")
     print(f"  {'Fixed CUF Floor (%)':<38} : {round(aug.cuf_floor_fixed_pct, 2)}")
-    solar_label = f"+{aug.s0_extra_mwp:.1f} MWp DC" if aug.s0_extra_mwp > 0.0 else "None"
-    print(f"  {'Solar Oversizing':<38} : {solar_label}")
     print(f"  {'N_max (shortfall windows)':<38} : {aug.n_max}")
 
-    print(f"\n  {'── OPTIMAL AUGMENTATION SCHEDULE'}")
+    print(f"\n  {'── OPTIMAL BESS AUGMENTATION SCHEDULE'}")
     print(f"  {'Year-1 Extra Containers (x0)':<38} : {aug.initial_extra_containers}")
-    if aug.augmentation_events:
-        for ev in aug.augmentation_events:
-            print(f"  {'  Augmentation Year ' + str(ev['year']):<38} : {ev['containers']} container(s)")
+    if aug.bess_augmentation_events:
+        for ev in aug.bess_augmentation_events:
+            print(f"  {'  BESS Year ' + str(ev['year']):<38} : {ev['containers']} container(s)")
     else:
-        print(f"  {'  No future augmentation events':<38}")
+        print(f"  {'  No future BESS augmentation events':<38}")
+
+    print(f"\n  {'── OPTIMAL SOLAR AUGMENTATION SCHEDULE'}")
+    if aug.solar_augmentation_events:
+        for ev in aug.solar_augmentation_events:
+            print(f"  {'  Solar Year ' + str(ev['year']):<38} : {ev['mwp']:.1f} MWp DC")
+    else:
+        print(f"  {'  No solar augmentation events':<38}")
 
     print(f"\n  {'── ECONOMICS'}")
     print(f"  {'Savings NPV Gain (Rs Crore)':<38} : {cr(aug.savings_npv_gain)}")
-    print(f"  {'PV of Augmentation Costs (Rs Crore)':<38} : {cr(aug.total_pv_aug_cost)}")
-    print(f"  {'PV of Solar Oversize Cost (Rs Crore)':<38} : {cr(aug.pv_solar_oversize_cost)}")
+    print(f"  {'PV of BESS Aug Costs (Rs Crore)':<38} : {cr(aug.total_pv_bess_aug_cost)}")
+    print(f"  {'PV of Solar Aug Costs (Rs Crore)':<38} : {cr(aug.total_pv_solar_aug_cost)}")
     print(f"  {'Net Score (Rs Crore)':<38} : {cr(aug.final_score)}")
 
     print(f"\n  {'── AUGMENTATION SOLVER STATS'}")
     print(f"  {'Trials completed':<38} : {aug.n_trials}")
     print(f"  {'Feasible trials (CUF-compliant)':<38} : {aug.n_feasible}")
 
-    print(f"\n  {'── 25-YEAR CUF TRACKING'}")
-    hdr = (f"  {'Yr':>3}  {'CUF (%)':>9}  {'Floor (%)':>10}  "
-           f"{'Baseline (%)':>13}  {'Aug Cost (Cr)':>14}  {'Delta Savings (Cr)':>19}")
+    life = len(aug.cuf_series)
+    print(f"\n  ── {life}-YEAR CUF TRACKING")
+    hdr = (
+        f"  {'Yr':>3}  {'CUF (%)':>9}  {'Floor (%)':>10}  "
+        f"{'Baseline (%)':>13}  {'BESS Capex (Cr)':>16}  "
+        f"{'Solar Capex (Cr)':>17}  {'Delta Savings (Cr)':>19}"
+    )
     print(f"\n{hdr}")
     sep()
     floor = aug.cuf_floor_fixed_pct
-    for y in range(25):
+    for y in range(life):
         cuf_ok = "✓" if aug.cuf_series[y] >= floor else "✗"
         print(
             f"  {y+1:>3}  "
             f"{aug.cuf_series[y]:>8.2f}% {cuf_ok}  "
             f"{floor:>9.2f}%  "
             f"{aug.baseline_cuf_series[y]:>12.2f}%  "
-            f"{aug.yearly_aug_costs[y]/CRORE_TO_RS:>14.4f}  "
+            f"{aug.yearly_bess_aug_costs[y]/CRORE_TO_RS:>16.4f}  "
+            f"{aug.yearly_solar_aug_costs[y]/CRORE_TO_RS:>17.4f}  "
             f"{aug.yearly_delta_savings[y]/CRORE_TO_RS:>19.4f}"
         )
     sep()
@@ -725,7 +735,12 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
 # Augmentation lifecycle plot
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_containers: int, output_path: Path) -> None:
+def plot_augmentation(
+    result: AugmentationResult,
+    pre: PreAnalysisResult,
+    base_containers: int,
+    output_path: Path,
+) -> None:
     tenure = len(result.cuf_series)
     years  = np.arange(1, tenure + 1)
 
@@ -734,7 +749,7 @@ def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_c
 
     fig = plt.figure(figsize=(18, 14))
     fig.suptitle(
-        "BESS Augmentation Lifecycle Plan",
+        "Solar + BESS Augmentation Lifecycle Plan",
         fontsize=13, fontweight="bold", y=0.99,
     )
 
@@ -749,59 +764,81 @@ def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_c
                 linewidth=1.5, label=f"Fixed CUF Floor ({result.cuf_floor_fixed_pct:.2f}%)")
     for (s_yr, e_yr) in result.shortfall_windows:
         ax1.axvspan(s_yr - 0.5, e_yr + 0.5, color=C["discom"], alpha=0.1)
+    # Mark solar augmentation event years
+    for ev in result.solar_augmentation_events:
+        ax1.axvline(ev["year"], color=C["solar"], lw=1.2, ls=":", alpha=0.7)
     ax1.set_title("CUF Trajectory", fontweight="bold")
     ax1.set_xlabel("Year")
     ax1.set_ylabel("CUF (%)")
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.25)
 
-    # ── Panel 2: Deployment Timeline ─────────────────────────────────────────
+    # ── Panel 2: Deployment Timeline (BESS containers + solar MW) ────────────
     ax2 = fig.add_subplot(gs[0, 1])
     total_y1 = base_containers + result.initial_extra_containers
     cumul_containers = np.full(tenure, float(total_y1))
-    for ev in result.augmentation_events:
-        yr = ev["year"]
-        k  = ev["containers"]
-        cumul_containers[yr - 1:] += k
+    for ev in result.bess_augmentation_events:
+        cumul_containers[ev["year"] - 1:] += ev["containers"]
 
     ax2.fill_between(years, 0, base_containers, step="pre", alpha=0.4,
-                     color="lightgrey", label=f"Base ({base_containers})")
-    ax2.fill_between(years, base_containers,
-                     base_containers + result.initial_extra_containers,
-                     step="pre", alpha=0.6, color=C["bess"],
-                     label=f"x0 at Year 1 (+{result.initial_extra_containers})")
+                     color="lightgrey", label=f"Base BESS ({base_containers})")
+    if result.initial_extra_containers > 0:
+        ax2.fill_between(
+            years, base_containers,
+            base_containers + result.initial_extra_containers,
+            step="pre", alpha=0.6, color=C["bess"],
+            label=f"x0 at Year 1 (+{result.initial_extra_containers})",
+        )
     prev = np.full(tenure, float(base_containers + result.initial_extra_containers))
-    for ev in result.augmentation_events:
+    for ev in result.bess_augmentation_events:
         yr = ev["year"]
         k  = ev["containers"]
-        next_level = prev.copy()
-        next_level[yr - 1:] += k
-        ax2.fill_between(years, prev, next_level, step="pre", alpha=0.6,
-                         color=C["savings"], label=f"Year {yr} +{k}")
-        prev = next_level
+        nxt = prev.copy()
+        nxt[yr - 1:] += k
+        ax2.fill_between(years, prev, nxt, step="pre", alpha=0.6,
+                         color=C["savings"], label=f"BESS Year {yr} +{k}")
+        prev = nxt
     ax2.step(years, cumul_containers, where="pre", color="#333333", linewidth=1.5)
-    if result.s0_extra_mwp > 0:
-        ax2.annotate(
-            f"+{result.s0_extra_mwp:.1f} MWp DC solar",
-            xy=(1, total_y1), xytext=(3, total_y1 + 1),
-            ha="left", fontsize=8, color=C["solar"],
-            arrowprops=dict(arrowstyle="->", color=C["solar"], lw=1),
-        )
+
+    # Solar augmentation on secondary Y axis (AC MW)
+    if result.solar_augmentation_events:
+        ax2r = ax2.twinx()
+        cumul_solar_mw = np.zeros(tenure)
+        for ev in result.solar_augmentation_events:
+            yr  = ev["year"]
+            # Store raw MWp for annotation; deployment MW grows from that year onward
+            cumul_solar_mw[yr - 1:] += ev["mwp"]
+        ax2r.step(years, cumul_solar_mw, where="pre", color=C["solar"],
+                  linewidth=2, linestyle="--", label="Cumul. Solar Aug (MWp)")
+        for ev in result.solar_augmentation_events:
+            ax2r.annotate(
+                f"+{ev['mwp']:.1f} MWp\nY{ev['year']}",
+                xy=(ev["year"], cumul_solar_mw[ev["year"] - 1]),
+                xytext=(ev["year"] + 0.5, cumul_solar_mw[ev["year"] - 1] * 1.05 + 1),
+                fontsize=7, color=C["solar"],
+                arrowprops=dict(arrowstyle="->", color=C["solar"], lw=0.8),
+            )
+        ax2r.set_ylabel("Cumulative Solar Added (MWp DC)", color=C["solar"])
+        ax2r.tick_params(axis="y", labelcolor=C["solar"])
+        # Merge legends
+        h2, l2 = ax2r.get_legend_handles_labels()
+        h1, l1 = ax2.get_legend_handles_labels()
+        ax2.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper left")
+    else:
+        ax2.legend(fontsize=8)
+
     ax2.set_title("Deployment Timeline", fontweight="bold")
     ax2.set_xlabel("Year")
-    ax2.set_ylabel("Containers")
-    ax2.legend(fontsize=8)
+    ax2.set_ylabel("BESS Containers")
     ax2.grid(True, alpha=0.25)
 
     # ── Panel 3: Annual Economics ─────────────────────────────────────────────
     ax3 = fig.add_subplot(gs[1, 0])
-    bess_cr = result.yearly_aug_costs / 1e7
-    ax3.bar(years, bess_cr, color=C["bess"], alpha=0.8, label="BESS Capex")
-    if result.s0_extra_mwp > 0.0:
-        solar_bar = np.zeros(tenure)
-        solar_bar[0] = result.solar_oversize_capex_rs / 1e7
-        ax3.bar(years, solar_bar, bottom=bess_cr, color=C["solar"], alpha=0.8,
-                label="Solar Capex")
+    bess_cr  = result.yearly_bess_aug_costs  / 1e7
+    solar_cr = result.yearly_solar_aug_costs / 1e7
+    ax3.bar(years, bess_cr,  color=C["bess"],   alpha=0.8, label="BESS Capex")
+    ax3.bar(years, solar_cr, bottom=bess_cr, color=C["solar"], alpha=0.8,
+            label="Solar Capex")
     delta_cr = result.yearly_delta_savings / 1e7
     ax3.plot(years, delta_cr, color=C["savings"], linewidth=2,
              marker="o", markersize=3, label="Delta Savings")
@@ -815,10 +852,10 @@ def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_c
     ax4 = fig.add_subplot(gs[1, 1])
     labels = ["Savings NPV", "BESS Capex", "Solar Capex", "Net Score"]
     values = [
-        result.savings_npv_gain / 1e7,
-        -result.total_pv_aug_cost / 1e7,
-        -result.pv_solar_oversize_cost / 1e7,
-        result.final_score / 1e7,
+        result.savings_npv_gain      / 1e7,
+        -result.total_pv_bess_aug_cost  / 1e7,
+        -result.total_pv_solar_aug_cost / 1e7,
+        result.final_score           / 1e7,
     ]
     bar_colors = [
         C["savings"],
@@ -829,7 +866,7 @@ def plot_augmentation(result: AugmentationResult, pre: PreAnalysisResult, base_c
     bars = ax4.bar(labels, values, color=bar_colors, alpha=0.85, edgecolor="white")
     ax4.axhline(0, color="#333333", linewidth=0.8)
     for bar, val in zip(bars, values):
-        va = "bottom" if val >= 0 else "top"
+        va     = "bottom" if val >= 0 else "top"
         offset = max(0.1, 0.02 * (abs(min(values)) + abs(max(values)))) if values else 0.1
         ax4.text(
             bar.get_x() + bar.get_width() / 2,
