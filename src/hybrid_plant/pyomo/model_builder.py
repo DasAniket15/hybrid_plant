@@ -289,6 +289,15 @@ def build_model(params: dict[str, Any]) -> pyo.ConcreteModel:
     m.con_gen_wind_ub  = pyo.Constraint(m.Y, m.T, rule=_gen_wind_ub)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # §6a-extra  PPA capacity == installed AC capacity (solar + wind)
+    # Capacity charges scale with ppa_mw; without this the solver exploits the
+    # unconstrained upper-bound to eliminate the PPA cap constraint for free.
+    # ─────────────────────────────────────────────────────────────────────────
+    m.con_ppa_equals_installed = pyo.Constraint(
+        expr=m.ppa_mw == m.solar_mw_0 + m.wind_mw_0
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
     # §6b  Non-negative direct (gen ≥ charge + curtail)
     # ─────────────────────────────────────────────────────────────────────────
     def _direct_nonneg(m_, y, t):
