@@ -20,9 +20,16 @@ Capturing these effects requires a full simulation, not scalar scaling.
 
 Degradation model per year t
 ────────────────────────────
-  Solar AC capacity   = base_solar_mw  × solar_eff[t]   (efficiency curve)
-  Wind capacity       = base_wind_mw   × wind_eff[t]    (efficiency curve)
-  BESS energy cap     = containers × container_size × soh[t]
+All three degradation curves (solar efficiency, wind efficiency, BESS SOH)
+use the **end-of-year** convention via ``data_loader.operating_value``:
+
+  • Year 1 operating value = 1.0 for all curves (fresh plant)
+  • Year N ≥ 2 operating value = ``curve[N - 1]`` (end of prior year)
+
+Per-year scaling:
+  Solar AC capacity   = base_solar_mw  × operating_value(solar_eff, year)
+  Wind capacity       = base_wind_mw   × operating_value(wind_eff,  year)
+  BESS energy cap     = containers × container_size × operating_value(soh, year)
                         (passed to PlantEngine as bess_soh_factor)
   Power caps, BESS    = C-rate × degraded energy cap    (inside PlantEngine)
 
@@ -149,8 +156,12 @@ class EnergyProjection:
 
     def _project_fast(self) -> dict[str, np.ndarray]:
         """
-        Fast path: scale Year-1 scalar totals by annual degradation factors.
+        Fast path: scale Year-1 scalar totals by annual operating values.
         Runs in microseconds. Used during solver trials for ranking only.
+
+        Year-1 totals (``self._solar_1`` etc.) were produced by a Year-1
+        simulation with operating values 1.0 (fresh plant), so scaling by
+        ``operating_value(curve, year)`` directly yields the year-t total.
         """
         solar_arr   = np.zeros(self._project_life)
         wind_arr    = np.zeros(self._project_life)

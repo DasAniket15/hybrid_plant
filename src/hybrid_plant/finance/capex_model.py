@@ -50,13 +50,6 @@ class CapexModel:
             transmission_capex : float  Rs
             total_capex        : float  Rs
         """
-        if solar_capacity_mw < 0 or wind_capacity_mw < 0 or bess_energy_capacity_mwh < 0:
-            raise ValueError(
-                "Capacities must be non-negative; "
-                f"got solar={solar_capacity_mw}, wind={wind_capacity_mw}, "
-                f"bess={bess_energy_capacity_mwh}"
-            )
-
         cfg = self._cfg
         solar_dc_mwp = solar_capacity_mw * cfg["solar"]["ac_dc_ratio"]
 

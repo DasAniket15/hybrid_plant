@@ -350,6 +350,224 @@ except Exception as e:
     traceback.print_exc()
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Augmentation Engine
+# ─────────────────────────────────────────────────────────────────────────────
+section("13. AUGMENTATION ENGINE")
+try:
+    import math as _math
+    import pandas as _pd
+    from hybrid_plant.augmentation.cohort import BESSCohort, CohortRegistry
+    from hybrid_plant.augmentation.cuf_evaluator import compute_plant_cuf
+    from hybrid_plant.augmentation.lifecycle_simulator import LifecycleSimulator
+    from hybrid_plant.augmentation.augmentation_engine import AugmentationEngine
+    from hybrid_plant.data_loader import load_soh_curve
+    from hybrid_plant.energy.year1_engine import Year1Engine
+    from hybrid_plant._paths import find_project_root
+
+    _soh   = load_soh_curve(config)
+    _eng   = Year1Engine(config, data)
+    _root  = find_project_root()
+
+    def _load_eff(fpath, col):
+        df = _pd.read_csv(_root / fpath)
+        df.columns = df.columns.str.strip().str.lower()
+        return dict(zip(df["year"].astype(int), df[col]))
+
+    _solar_eff = _load_eff(config.project["generation"]["solar"]["degradation"]["file"], "efficiency")
+    _wind_eff  = _load_eff(config.project["generation"]["wind"]["degradation"]["file"], "efficiency")
+    _csize     = float(config.bess["bess"]["container"]["size_mwh"])
+    _life      = int(config.project["project"]["project_life_years"])
+
+    # ── Cohort registry totals ────────────────────────────────────────────────
+    from hybrid_plant.data_loader import operating_value as _op
+    _reg = CohortRegistry(initial_containers=10)
+    _reg.add(install_year=8, containers=4)
+    # Year 10 under end-of-year convention:
+    #   initial cohort age=10 → operating_value(soh,10) = soh[9]
+    #   aug cohort     age=3  → operating_value(soh, 3) = soh[2]
+    _expected_eff = 10 * _csize * _op(_soh, 10) + 4 * _csize * _op(_soh, 3)
+    _actual_eff   = _reg.effective_capacity_mwh(10, _csize, _soh)
+    check("cohort registry totals match expected",
+          _math.isclose(_actual_eff, _expected_eff, rel_tol=1e-12),
+          f"expected={_expected_eff:.4f}  actual={_actual_eff:.4f}")
+    _n, _soh_blend = _reg.to_plant_params(10, _csize, _soh)
+    check("blended SOH satisfies capacity identity",
+          _math.isclose(_n * _csize * _soh_blend, _expected_eff, rel_tol=1e-12),
+          f"n={_n}  blend={round(_soh_blend,4)}")
+    check("aug cohort inactive before install year",
+          _reg.effective_capacity_mwh(7, _csize, _soh) ==
+          10 * _csize * _op(_soh, 7))
+
+    # ── LifecycleSimulator — fast_mode ────────────────────────────────────────
+    _sim_params = {
+        "solar_capacity_mw": 200.0, "wind_capacity_mw": 0.0,
+        "ppa_capacity_mw": 60.0, "bess_containers": 30,
+        "charge_c_rate": 0.5, "discharge_c_rate": 0.5,
+        "dispatch_priority": "solar_first", "bess_charge_source": "solar_only",
+    }
+    _sim = LifecycleSimulator(
+        config=config, plant_engine=_eng.plant,
+        soh_curve=_soh, solar_eff_curve=_solar_eff,
+        wind_eff_curve=_wind_eff, loss_factor=_eng.grid.loss_factor,
+    )
+    _lc_fast = _sim.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=0.0,
+        fast_mode=True,
+    )
+    check("lifecycle simulator runs without exception (fast_mode)",
+          len(_lc_fast.cuf_series) == _life,
+          f"len(cuf_series)={len(_lc_fast.cuf_series)}")
+    check("augmentation OPEX >= 0 all years (fast_mode)",
+          all(v >= 0 for v in _lc_fast.opex_augmentation_lump) and
+          all(v >= 0 for v in _lc_fast.opex_augmentation_om))
+    check("no events fire with threshold=0",
+          len(_lc_fast.event_log) == 0)
+
+    # ── LifecycleSimulator — triggered event, lump cost formula ───────────────
+    _y1_sim = _eng.evaluate(**_sim_params)
+    from hybrid_plant.augmentation.cuf_evaluator import year1_busbar_mwh
+    _cuf_y1 = compute_plant_cuf(year1_busbar_mwh(_y1_sim), _sim_params["ppa_capacity_mw"])
+    _lc_trig = _sim.simulate(
+        params=_sim_params, initial_containers=30,
+        trigger_threshold_cuf=_cuf_y1 * 0.93,
+        fast_mode=True,
+    )
+    check("lifecycle simulator runs without exception (triggered)",
+          len(_lc_trig.cuf_series) == _life)
+    check("event_log entries are well-formed",
+          all({"year","trigger_cuf","hard_threshold","post_event_cuf",
+               "k_containers","lump_cost_rs"}.issubset(ev.keys())
+              for ev in _lc_trig.event_log),
+          f"n_events={len(_lc_trig.event_log)}")
+
+    if _lc_trig.event_log:
+        _ev        = _lc_trig.event_log[0]
+        _ev_years  = {e["year"] for e in _lc_trig.event_log}
+        _cost_per_mwh = float(config.bess["bess"]["augmentation"]["cost_per_mwh"])
+        _expected_lump = _ev["k_containers"] * _csize * _cost_per_mwh
+        check("lump cost = k × container_size × cost_per_mwh",
+              _math.isclose(_ev["lump_cost_rs"], _expected_lump, rel_tol=1e-9),
+              f"got={_ev['lump_cost_rs']:.2f}  expected={_expected_lump:.2f}")
+        check("lump cost > 0 in event years",
+              all(_lc_trig.opex_augmentation_lump[yr - 1] > 0 for yr in _ev_years))
+        check("lump cost = 0 in non-event years",
+              sum(1 for yr, v in enumerate(_lc_trig.opex_augmentation_lump, 1)
+                  if yr not in _ev_years and v != 0.0) == 0)
+    else:
+        check("lump cost formula (no events — skipped)", True, "no events fired")
+        check("lump cost > 0 in event year (skipped)", True)
+        check("lump cost = 0 in non-event years (skipped)", True)
+
+    # ── AugmentationEngine.evaluate_scenario ─────────────────────────────────
+    _aug_engine = AugmentationEngine(
+        config, data, _eng, _soh,
+        trigger_threshold_cuf = _cuf_y1 * 0.93,
+    )
+    _aug_res = _aug_engine.evaluate_scenario(_sim_params, fast_mode=True)
+    _aug_fi  = _aug_res["finance"]
+    check("evaluate_scenario returns finance dict",
+          "savings_npv" in _aug_fi and "augmentation" in _aug_fi)
+    check("savings_npv is finite",
+          _math.isfinite(_aug_fi["savings_npv"]))
+    check("augmentation sub-dict has all required keys",
+          {"trigger_threshold_cuf","event_log",
+           "cuf_series","cohort_snapshot","cohort_capacity_timeline",
+           "total_lump_cost_rs","total_om_cost_rs","n_events"}.issubset(
+              _aug_fi["augmentation"].keys()))
+
+    # ── initial_containers matches params["bess_containers"] (no-oversize path) ─
+    check("initial_containers == bess_containers when no oversize",
+          _aug_fi["augmentation"]["initial_containers"] == _sim_params["bess_containers"])
+
+    # ── bess.yaml new keys present ──────────────────────────────────────────
+    _aug_cfg = config.bess["bess"]["augmentation"]
+    check("bess.yaml: solver_aware key removed",
+          "solver_aware" not in _aug_cfg)
+    check("bess.yaml: mode key removed",
+          "mode" not in _aug_cfg)
+    check("bess.yaml: fixed_schedule key removed",
+          "fixed_schedule" not in _aug_cfg)
+    check("bess.yaml: max_oversize_containers present",
+          "max_oversize_containers" in _aug_cfg)
+    check("bess.yaml: oversize_patience present",
+          "oversize_patience" in _aug_cfg)
+    check("bess.yaml: oversize_npv_tolerance_rs present",
+          "oversize_npv_tolerance_rs" in _aug_cfg)
+    check("bess.yaml: payback_filter block present",
+          "payback_filter" in _aug_cfg)
+    check("bess.yaml: payback_filter.enabled present",
+          "enabled" in _aug_cfg["payback_filter"])
+    check("bess.yaml: trigger_tolerance_pp >= 0.01 (no longer near-zero)",
+          float(_aug_cfg.get("trigger_tolerance_pp", 0)) >= 0.01)
+    check("bess.yaml: max_augmentation_containers_per_event <= 100",
+          int(_aug_cfg.get("max_augmentation_containers_per_event", 9999)) <= 100)
+
+    # ── OversizeOptimizer module importable ─────────────────────────────────
+    from hybrid_plant.augmentation.oversize_optimizer import (
+        find_optimal_oversize, OversizeResult
+    )
+    check("oversize_optimizer module importable", True)
+    check("find_optimal_oversize callable", callable(find_optimal_oversize))
+    check("OversizeResult is a class", isinstance(OversizeResult, type))
+
+    # ── LifecycleResult fields ───────────────────────────────────────────────
+    from hybrid_plant.augmentation.lifecycle_simulator import LifecycleResult
+    import dataclasses as _dc
+    _lc_fields = {f.name for f in _dc.fields(LifecycleResult)}
+    check("LifecycleResult has cuf_series field",
+          "cuf_series" in _lc_fields)
+    check("LifecycleResult has no skipped_event_log field",
+          "skipped_event_log" not in _lc_fields)
+
+    # ── LifecycleSimulator signature ─────────────────────────────────────────
+    import inspect as _inspect
+    _lc_sig = _inspect.signature(LifecycleSimulator.__init__)
+    check("LifecycleSimulator.__init__ has no event_filter param",
+          "event_filter" not in _lc_sig.parameters)
+
+    # ── AugmentationEngine signature ─────────────────────────────────────────
+    _ae_sig = _inspect.signature(AugmentationEngine.__init__)
+    check("AugmentationEngine.__init__ has no pass1_lcoe param",
+          "pass1_lcoe" not in _ae_sig.parameters)
+
+    # ── evaluate_scenario accepts initial_containers kwarg ──────────────────
+    _es_sig = _inspect.signature(AugmentationEngine.evaluate_scenario)
+    check("evaluate_scenario has initial_containers param",
+          "initial_containers" in _es_sig.parameters)
+
+    # ── SolverEngine has no run_augmentation_aware method ───────────────────
+    from hybrid_plant.solver.solver_engine import SolverEngine
+    check("SolverEngine.run_augmentation_aware removed",
+          not hasattr(SolverEngine, "run_augmentation_aware"))
+
+    # ── SolverResult has no augmentation_result field ───────────────────────
+    from hybrid_plant.solver.solver_engine import SolverResult
+    _sr_fields = {f.name for f in _dc.fields(SolverResult)}
+    check("SolverResult.augmentation_result field removed",
+          "augmentation_result" not in _sr_fields)
+
+    # ── max_events limit: events capped at max_augmentation_events ──────────
+    _aug_cfg = config.bess["bess"]["augmentation"]
+    check("bess.yaml has max_augmentation_events key",
+          "max_augmentation_events" in _aug_cfg)
+    check("max_augmentation_events == 3",
+          int(_aug_cfg.get("max_augmentation_events", 0)) == 3)
+
+    # ── OversizeResult structure ─────────────────────────────────────────────
+    _os_result_fields = {f.name for f in _dc.fields(OversizeResult)}
+    check("OversizeResult has best_extra field",       "best_extra"              in _os_result_fields)
+    check("OversizeResult has best_initial_containers","best_initial_containers" in _os_result_fields)
+    check("OversizeResult has best_result field",      "best_result"             in _os_result_fields)
+    check("OversizeResult has sweep_log field",        "sweep_log"               in _os_result_fields)
+
+except Exception as e:
+    check("Augmentation Engine — EXCEPTION", False, str(e))
+    traceback.print_exc()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────

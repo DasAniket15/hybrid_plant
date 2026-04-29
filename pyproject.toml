@@ -21,13 +21,15 @@ dev = [
     "plotly",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/hybrid_plant"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts   = "-v"
-pythonpath = ["src"]
+markers = [
+    "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
+]
 
 [tool.ruff]
 line-length = 100
