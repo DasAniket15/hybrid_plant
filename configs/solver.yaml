@@ -115,13 +115,13 @@ solver:
 # ─────────────────────────────────────────────────────────────────────
 
 pyomo:
-  enabled: false                  # true = use Pyomo path, false = use Optuna path
+  enabled: true                  # true = use Pyomo path, false = use Optuna path
 
   solver: highs                   # highs | cbc | glpk
   time_limit_seconds: 7200        # wall-clock time limit
   mip_gap: 0.005                  # 0.5% MIP optimality gap tolerance
 
-  cuf_maintenance_enabled: true   # disable only if all augmentation is disabled
+  cuf_maintenance_enabled: false   # disable only if all augmentation is disabled
 
   augmentation:
     solar:
