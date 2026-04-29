@@ -162,7 +162,9 @@ class AugmentationPreAnalysis:
         cuf_series = delivered / (ppa_cap * hours_per_year) * 100.0
 
         # ── 2. CUF floor ─────────────────────────────────────────────────────
-        fixed_cuf_floor = float(cuf_series[0])
+        aug_cfg_pre = config.augmentation.get("augmentation_optimizer", {})
+        discount_pct = float(aug_cfg_pre.get("cuf_floor_discount_pct", 0.0))
+        fixed_cuf_floor = float(cuf_series[0]) - discount_pct
 
         # ── 3. Shortfall windows ──────────────────────────────────────────────
         shortfall_mask    = cuf_series < fixed_cuf_floor

@@ -416,9 +416,15 @@ class AugmentationEngine:
         try:
             proj = self._simulate_schedule(x0, bess_events, solar_events)
 
-            # Hard constraint: CUF must meet the fixed floor every year
-            if np.any(proj["cuf_series"] < self._pre.fixed_cuf_floor):
-                return PENALTY
+            floor = self._pre.fixed_cuf_floor
+            cuf   = proj["cuf_series"]
+
+            # Graduated soft penalty: gives Optuna a gradient toward early events
+            # rather than a flat cliff.  All infeasible scores stay well below
+            # -1e14 so the feasibility check in run() still works correctly.
+            shortfall = np.maximum(floor - cuf, 0.0)
+            if shortfall.sum() > 0:
+                return -1e12 - float(shortfall.sum()) * 1e10
 
             # Savings NPV gain: extra meter delivery × DISCOM tariff (Rs/kWh)
             delta_meter      = (
@@ -463,10 +469,59 @@ class AugmentationEngine:
         N_solar = self._pre.N_solar_max
         bounds  = self._pre.search_bounds
 
+        # ── Pre-flight diagnostics ─────────────────────────────────────────────
+        floor   = self._pre.fixed_cuf_floor
+        base    = self._pre.baseline_cuf_series
+        failing = [y + 1 for y, v in enumerate(base) if v < floor]
+        print(f"\n  CUF floor           : {floor:.4f}%")
+        print(f"  Baseline Year-1 CUF : {base[0]:.4f}%")
+        if failing:
+            print(f"  Years below floor   : {failing[0]}–{failing[-1]} "
+                  f"({len(failing)} of {len(base)} years)")
+        print(f"  N_max (BESS events) : {N_max}   "
+              f"N_solar_max : {N_solar}")
+        print(f"  Search bounds  — x0_max={bounds.x0_max}, k_max={bounds.k_max}, "
+              f"solar_mwp_max={bounds.solar_event_max_mwp}, "
+              f"years {bounds.year_min}–{bounds.year_max}")
+
+        # Simulate the maximum-x0 baseline to confirm oversizing actually lifts CUF
+        proj_x0max = self._simulate_schedule(
+            x0=bounds.x0_max, bess_events=[], solar_events=[]
+        )
+        x0_cuf_y1 = proj_x0max["cuf_series"][0]
+        x0_first_failing = next(
+            (y + 1 for y, v in enumerate(proj_x0max["cuf_series"]) if v < floor),
+            None,
+        )
+        print(f"\n  x0={bounds.x0_max} Year-1 CUF : {x0_cuf_y1:.4f}%  "
+              f"(floor margin: {x0_cuf_y1 - floor:+.4f}%)")
+        if x0_first_failing:
+            print(f"  x0={bounds.x0_max} first failing year : {x0_first_failing}")
+        else:
+            print(f"  x0={bounds.x0_max} alone covers all {len(base)} years — "
+                  "events only needed to optimise NPV")
+
         study = optuna.create_study(
             direction = "maximize",
             sampler   = optuna.samplers.TPESampler(seed=seed),
         )
+
+        # ── Warm-start: enqueue aggressive early-year trials ───────────────────
+        # Optuna sees no gradient for flat -1e15 penalties; seeding with known
+        # "deploy-everything-early" combinations bootstraps TPE and prevents it
+        # from spending all its budget on late-year events.
+        early_year = bounds.year_min  # = 2
+        for x0_ws in (bounds.x0_max, bounds.x0_max // 2):
+            ws_params: dict[str, int | float] = {"x0": x0_ws}
+            for i in range(N_max):
+                ws_params[f"bess_year_{i}"] = early_year
+                ws_params[f"bess_k_{i}"]    = bounds.k_max
+            if bounds.solar_event_max_mwp > 0:
+                for j in range(N_solar):
+                    ws_params[f"solar_year_{j}"] = early_year
+                    ws_params[f"solar_mwp_{j}"]  = bounds.solar_event_max_mwp
+            study.enqueue_trial(ws_params)
+
         try:
             study.optimize(self._objective, n_trials=trials, show_progress_bar=True)
         except KeyboardInterrupt:

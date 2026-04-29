@@ -9,6 +9,13 @@ augmentation_optimizer:
     enabled: true
     max_extra_mwp_per_event: 50.0    # upper bound for solar DC MWp per augmentation event
 
+  # ── CUF floor ─────────────────────────────────────────────────────────────────
+  # The floor is set to Year-1 CUF from the baseline energy projection.
+  # cuf_floor_discount_pct softens it by that many percentage points (absolute)
+  # so the optimizer has breathing room when degradation is steep early on.
+  # Set to 0.0 for the strict contractual guarantee (Year-1 CUF exactly).
+  cuf_floor_discount_pct: 0.0
+
   solver:
-    n_trials: 500                    # increase to 750+ for projects with N_max >= 4
+    n_trials: 750                    # 500 is often insufficient when N_max=1 and events must land early
     random_seed: 42
