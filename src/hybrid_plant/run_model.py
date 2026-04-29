@@ -673,20 +673,6 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
     print(f"  Day-250 dispatch plot saved → {output_path}")
     plt.close()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    config = load_config()
-    data   = load_timeseries_data(config)
-
-    if pyomo_enabled(config):
-        _run_pyomo(config, data)
-    else:
-        _run_optuna(config, data)
-
-
 def _run_optuna(config, data) -> None:
     """Original Optuna-based solver path (unchanged)."""
     energy_engine  = Year1Engine(config, data)
@@ -941,3 +927,17 @@ def _plot_pyomo_dashboard(ps, data, output_path) -> None:
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"\n  Pyomo dashboard plot saved → {output_path}")
     plt.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    config = load_config()
+    data   = load_timeseries_data(config)
+
+    if pyomo_enabled(config):
+        _run_pyomo(config, data)
+    else:
+        _run_optuna(config, data)
