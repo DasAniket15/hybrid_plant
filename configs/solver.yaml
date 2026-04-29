@@ -108,3 +108,31 @@ solver:
   n_trials: 1500
   n_jobs: 1                     # parallel workers (1 = sequential)
   random_seed: 42
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PYOMO SOLVER SETTINGS  (new section — does not affect Optuna path)
+# ─────────────────────────────────────────────────────────────────────
+
+pyomo:
+  enabled: false                  # true = use Pyomo path, false = use Optuna path
+
+  solver: highs                   # highs | cbc | glpk
+  time_limit_seconds: 7200        # wall-clock time limit
+  mip_gap: 0.005                  # 0.5% MIP optimality gap tolerance
+
+  cuf_maintenance_enabled: true   # disable only if all augmentation is disabled
+
+  augmentation:
+    solar:
+      enabled: false
+      capex_rs_per_mw: 2.26e7
+      om_rs_per_mw_per_year: 1.0e5
+    wind:
+      enabled: false
+      capex_rs_per_mw: 7.0e7
+      om_rs_per_mw_per_year: 1.2e6
+    bess:
+      enabled: false
+      capex_rs_per_mwh: 0.60e7
+      om_rs_per_mwh_per_year: 6.0e4

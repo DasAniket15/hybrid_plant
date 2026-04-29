@@ -36,6 +36,7 @@ from hybrid_plant.energy.grid_interface import GridInterface
 from hybrid_plant.energy.plant_engine import PlantEngine
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
+from hybrid_plant.pyomo.pyomo_config import pyomo_enabled
 from hybrid_plant.solver.solver_engine import SolverEngine
 
 logging.basicConfig(level=logging.WARNING)
@@ -677,23 +678,33 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    config         = load_config()
-    data           = load_timeseries_data(config)
+    config = load_config()
+    data   = load_timeseries_data(config)
+
+    if pyomo_enabled(config):
+        _run_pyomo(config, data)
+    else:
+        _run_optuna(config, data)
+
+
+def _run_optuna(config, data) -> None:
+    """Original Optuna-based solver path (unchanged)."""
     energy_engine  = Year1Engine(config, data)
     finance_engine = FinanceEngine(config, data)
     solver         = SolverEngine(config, data, energy_engine, finance_engine)
 
     n_trials = config.solver["solver"].get("n_trials", 300)
-    print(f"\nRunning solver ({n_trials} trials) …")
+    print(f"\nRunning Optuna solver ({n_trials} trials) …")
     result = solver.run(n_trials=n_trials, show_progress=True)
 
     params = result.best_params
     y1     = result.full_result["year1"]
     fi     = result.full_result["finance"]
 
+    energy_engine_ref = Year1Engine(config, data)
     print_section1(params, y1, fi)
     print_section2(fi)
-    print_section3(params, y1, fi, data, energy_engine)
+    print_section3(params, y1, fi, data, energy_engine_ref)
     print_section4(fi)
     print_section5(fi)
     print_section6(fi)
@@ -705,6 +716,228 @@ if __name__ == "__main__":
 
     outputs_dir = find_project_root() / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
-
     plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
     plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")
+
+
+def _run_pyomo(config, data) -> None:
+    """Pyomo MILP path."""
+    from hybrid_plant.pyomo.parameter_builder import build_parameters_with_data
+    from hybrid_plant.pyomo.model_builder import build_model
+    from hybrid_plant.pyomo.solver_runner import solve_model
+    from hybrid_plant.pyomo.post_solve import compute_post_solve
+
+    print("\nBuilding Pyomo MILP model …")
+    params = build_parameters_with_data(config, data)
+    model  = build_model(params)
+
+    print("Solving …")
+    solve_result = solve_model(model, params)
+    print(f"  Status: {solve_result.status}  |  Termination: {solve_result.termination}")
+    print(f"  Objective: {solve_result.obj_value:,.0f} Rs (NPV)")
+
+    print("Extracting solution …")
+    ps = compute_post_solve(model, params, config, data)
+
+    _print_pyomo_dashboard(ps, config, data)
+
+    outputs_dir = find_project_root() / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    _plot_pyomo_dashboard(ps, data, outputs_dir / "model_output_pyomo.png")
+
+
+def _print_pyomo_dashboard(ps, config, data) -> None:
+    """Print 8-section dashboard from PostSolveResult."""
+    from hybrid_plant.constants import CRORE_TO_RS, MWH_TO_KWH
+
+    def cr(v): return round(float(v) / CRORE_TO_RS, 4)
+
+    sizing = ps.sizing
+    cap    = ps.capex_result
+    lcd    = ps.lcoe_breakdown
+    sv     = ps.savings_breakdown
+    lts    = ps.landed_tariff
+
+    # Section 1 — Optimal config
+    sep("SECTION 1 — OPTIMAL CONFIGURATION (PYOMO)")
+    print(f"\n  {'Solar capacity (AC MW)':<38} : {round(sizing['solar_mw_0'], 2)}")
+    print(f"  {'Solar capacity (DC MWp)':<38} : {round(cap['solar_dc_mwp'], 2)}")
+    ac_dc = round(cap['solar_dc_mwp'] / sizing['solar_mw_0'], 4) if sizing['solar_mw_0'] > 0 else 'N/A'
+    print(f"  {'AC/DC ratio':<38} : {ac_dc}")
+    print(f"  {'Wind capacity (MW)':<38} : {round(sizing['wind_mw_0'], 2)}")
+    print(f"  {'BESS containers (initial)':<38} : {sizing['bess_containers_initial']}")
+    print(f"  {'BESS energy capacity (MWh)':<38} : {round(sizing['bess_cap_0_mwh'], 2)}")
+    print(f"  {'BESS charge C-rate':<38} : {round(sizing['c_rate_charge_initial'], 4)}")
+    print(f"  {'BESS discharge C-rate':<38} : {round(sizing['c_rate_discharge_initial'], 4)}")
+    print(f"  {'PPA capacity (MW)':<38} : {round(sizing['ppa_mw'], 2)}")
+
+    # Section 2 — CAPEX
+    sep("SECTION 2 — CAPITAL & FINANCING")
+    print(f"\n  {'Solar CAPEX (Rs Crore)':<38} : {cr(cap['solar_capex'])}")
+    print(f"  {'Wind CAPEX (Rs Crore)':<38} : {cr(cap['wind_capex'])}")
+    print(f"  {'BESS CAPEX (Rs Crore)':<38} : {cr(cap['bess_capex'])}")
+    print(f"  {'Transmission CAPEX (Rs Crore)':<38} : {cr(cap['transmission_capex'])}")
+    print(f"  {'Total CAPEX (Rs Crore)':<38} : {cr(cap['total_capex'])}")
+    print(f"  {'Debt (Rs Crore)':<38} : {cr(lcd['debt_amount'])}")
+    print(f"  {'Equity (Rs Crore)':<38} : {cr(lcd['equity_amount'])}")
+    print(f"  {'WACC':<38} : {round(ps.wacc * 100, 4)} %")
+    print(f"  {'Annual EMI (Rs Crore)':<38} : {cr(lcd['emi'])}")
+
+    # Section 3 — Year-1 energy
+    y1  = ps.year1_energy
+    sep("SECTION 3 — YEAR-1 ENERGY BALANCE")
+    import numpy as np
+    solar_b  = float(np.sum(y1["solar_direct_pre"]))
+    wind_b   = float(np.sum(y1["wind_direct_pre"]))
+    disc_b   = float(np.sum(y1["discharge_pre"]))
+    busbar_y1 = solar_b + wind_b + disc_b
+    meter_y1  = ps.meter_mwh[0]
+    discom_y1 = ps.discom_draw_mwh[0]
+    print(f"\n  {'Solar Direct Busbar Y1 (MWh)':<38} : {round(solar_b, 1)}")
+    print(f"  {'Wind Direct Busbar Y1 (MWh)':<38} : {round(wind_b, 1)}")
+    print(f"  {'BESS Discharge Busbar Y1 (MWh)':<38} : {round(disc_b, 1)}")
+    print(f"  {'Total Busbar Y1 (MWh)':<38} : {round(busbar_y1, 1)}")
+    print(f"  {'Total Meter Y1 (MWh)':<38} : {round(meter_y1, 1)}")
+    print(f"  {'DISCOM Draw Y1 (MWh)':<38} : {round(discom_y1, 1)}")
+    print(f"  {'Plant CUF Y1 (%)':<38} : {round(ps.plant_cuf_pct[0], 2)}")
+    print(f"  {'Curtailment Y1 (MWh)':<38} : {round(ps.curtailment_mwh[0], 1)}")
+
+    # Section 4 — LCOE
+    sep("SECTION 4 — LCOE & TARIFF BUILD-UP")
+    lt_bd = ps.landed_tariff_breakdown
+    print(f"\n  {'LCOE (Rs/kWh)':<38} : {round(ps.lcoe, 4)}")
+    print(f"  {'Wheeling (Rs/kWh)':<38} : {round(lt_bd.get('wheeling_per_kwh', 0), 4)}")
+    print(f"  {'Electricity tax (Rs/kWh)':<38} : {round(lt_bd.get('electricity_tax_per_kwh', 0), 4)}")
+    print(f"  {'Landed Tariff Y1 (Rs/kWh)':<38} : {round(lts[0], 4)}")
+    print(f"  {'Landed Tariff Y25 (Rs/kWh)':<38} : {round(lts[-1], 4)}")
+    print(f"  {'DISCOM Avg (Rs/kWh)':<38} : {round(sv.get('discom_tariff', 0), 4)}")
+
+    # Section 5 — Savings
+    sep("SECTION 5 — CLIENT SAVINGS")
+    ann_sav    = sv["annual_savings"]
+    baseline   = sv["baseline_annual_cost"]
+    savings_y1 = ann_sav[0]
+    cum_25     = sum(ann_sav)
+    payback    = compute_payback_year(ann_sav)
+    print(f"\n  {'Baseline Annual Cost (Rs Crore)':<38} : {cr(baseline)}")
+    print(f"  {'Hybrid Cost Y1 (Rs Crore)':<38} : {cr(sv['annual_hybrid_cost'][0])}")
+    print(f"  {'Savings Y1 (Rs Crore)':<38} : {cr(savings_y1)}")
+    print(f"  {'Savings as % of baseline':<38} : {round(savings_y1/baseline*100, 2)} %")
+    print(f"  {'Savings NPV (Rs Crore)':<38} : {cr(ps.savings_npv)}")
+    print(f"  {'Cumulative 25-yr savings (Rs Cr)':<38} : {cr(cum_25)}")
+    print(f"  {'Payback year':<38} : {'Year ' + str(payback) if payback else 'Beyond 25 yr'}")
+
+    # Section 6 — OPEX
+    sep("SECTION 6 — OPEX BREAKDOWN (Rs Crore)")
+    ob_y1  = ps.opex_breakdown[0]
+    ob_y25 = ps.opex_breakdown[-1]
+    cols = [
+        ("Solar O&M",             "solar_om"),
+        ("Wind O&M",              "wind_om"),
+        ("BESS O&M",              "bess_om"),
+        ("Solar Transmission O&M","solar_transmission_om"),
+        ("Wind Transmission O&M", "wind_transmission_om"),
+        ("Land Lease",            "land_lease"),
+        ("Insurance",             "insurance"),
+    ]
+    print(f"\n  {'Component':<36}  {'Year 1':>10}  {'Year 25':>10}  {'Δ':>10}")
+    sep()
+    for label, key in cols:
+        v1  = cr(ob_y1[key]);  v25 = cr(ob_y25[key])
+        print(f"  {label:<36}  {v1:>10}  {v25:>10}  {round(v25-v1,4):>+10}")
+    sep()
+    print(f"  {'Total OPEX':<36}  {cr(ob_y1['total']):>10}  {cr(ob_y25['total']):>10}  {round(cr(ob_y25['total'])-cr(ob_y1['total']),4):>+10}")
+
+    # Section 7 — 25-year projections
+    sep("SECTION 7 — 25-YEAR PROJECTIONS")
+    hdr = (f"  {'Yr':>3}  {'Busbar MWh':>11}  {'Meter MWh':>10}  "
+           f"{'OPEX (Cr)':>10}  {'Landed ₹/kWh':>13}  "
+           f"{'Savings (Cr)':>13}  {'Cum Sav (Cr)':>14}")
+    print(f"\n{hdr}")
+    sep()
+    cumul = 0.0
+    for y in range(25):
+        cumul += ann_sav[y]
+        print(f"  {y+1:>3}  {ps.busbar_mwh[y]:>11.1f}  {ps.meter_mwh[y]:>10.1f}  "
+              f"{ps.opex_by_year[y]/CRORE_TO_RS:>10.4f}  {lts[y]:>13.4f}  "
+              f"{ann_sav[y]/CRORE_TO_RS:>13.4f}  {cumul/CRORE_TO_RS:>14.4f}")
+    sep()
+
+    # Section 8 — Augmentation schedule (new)
+    if ps.aug_events:
+        sep("SECTION 8 — AUGMENTATION SCHEDULE")
+        print(f"\n  {'Year':<6} {'Solar MW':>10} {'Wind MW':>10} {'BESS MWh':>10} {'CAPEX (Cr)':>12}")
+        sep()
+        for ev in ps.aug_events:
+            print(f"  {ev['year']:<6} {ev['solar_mw_added']:>10.2f} {ev['wind_mw_added']:>10.2f} "
+                  f"{ev['bess_mwh_added']:>10.2f} {cr(ev['capex_expensed_rs']):>12.4f}")
+        sep()
+
+
+def _plot_pyomo_dashboard(ps, data, output_path) -> None:
+    """4-panel dashboard for the Pyomo solution."""
+    import numpy as np
+
+    years         = np.arange(1, 26)
+    ann_sav       = np.array(ps.savings_breakdown["annual_savings"])
+    cumul         = np.cumsum(ann_sav) / CRORE_TO_RS
+    lts           = ps.landed_tariff
+    discom_avg    = ps.savings_breakdown["discom_tariff"]
+
+    load_mwh_ann  = float(np.sum(data["load_profile"]))
+    discom_mwh    = np.maximum(load_mwh_ann - np.array(ps.meter_mwh), 0)
+
+    fig = plt.figure(figsize=(18, 14))
+    sizing = ps.sizing
+    fig.suptitle(
+        f"Hybrid RE Plant — Pyomo MILP Dashboard\n"
+        f"Solar {round(sizing['solar_mw_0'],1)} MW  |  "
+        f"Wind {round(sizing['wind_mw_0'],1)} MW  |  "
+        f"BESS {round(sizing['bess_cap_0_mwh'],1)} MWh  |  "
+        f"PPA {round(sizing['ppa_mw'],1)} MW",
+        fontsize=13, fontweight="bold", y=0.99,
+    )
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.32)
+    C  = {"solar":"#f4a832","wind":"#4c9be8","bess":"#66bb6a",
+          "discom":"#ef5350","savings":"#26a69a","cumul":"#ab47bc"}
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax1.bar(years, ann_sav/CRORE_TO_RS, color=[C["savings"] if s>=0 else C["discom"] for s in ann_sav], alpha=0.8)
+    ax1r = ax1.twinx()
+    ax1r.plot(years, cumul, color=C["cumul"], linewidth=2, marker="o", markersize=3)
+    ax1r.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+    ax1.set_title("Annual & Cumulative Savings", fontweight="bold")
+    ax1.set_xlabel("Year"); ax1.set_ylabel("Annual Savings (Rs Crore)")
+    ax1r.set_ylabel("Cumulative Savings (Rs Crore)", color=C["cumul"])
+    ax1.grid(True, alpha=0.25)
+
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax2.plot(years, lts, color="#1f77b4", linewidth=2, label="Landed Tariff")
+    ax2.axhline(discom_avg, color=C["discom"], linewidth=1.5, linestyle="--",
+                label=f"DISCOM Avg (Rs {round(discom_avg,2)})")
+    ax2.fill_between(years, lts, discom_avg, where=[l < discom_avg for l in lts],
+                     alpha=0.15, color=C["savings"])
+    ax2.set_title("Landed Tariff vs DISCOM Tariff", fontweight="bold")
+    ax2.set_xlabel("Year"); ax2.set_ylabel("Rs / kWh")
+    ax2.legend(fontsize=8); ax2.grid(True, alpha=0.25)
+
+    ax3 = fig.add_subplot(gs[1, 0])
+    solar_mwh_yr = np.array(ps.busbar_mwh)  # proxy
+    ax3.stackplot(years, solar_mwh_yr/1e3, discom_mwh/1e3,
+                  labels=["RE Busbar", "DISCOM Draw"],
+                  colors=[C["solar"], C["discom"]], alpha=0.85)
+    ax3.set_title("Energy Mix Over 25 Years", fontweight="bold")
+    ax3.set_xlabel("Year"); ax3.set_ylabel("Energy (GWh)")
+    ax3.legend(fontsize=8, loc="lower left"); ax3.grid(True, alpha=0.25)
+
+    ax4 = fig.add_subplot(gs[1, 1])
+    ob = ps.opex_breakdown
+    opex_total = np.array([x["total"] for x in ob]) / CRORE_TO_RS
+    ax4.plot(years, opex_total, color="#42a5f5", linewidth=2)
+    ax4.set_title("Total OPEX Over 25 Years", fontweight="bold")
+    ax4.set_xlabel("Year"); ax4.set_ylabel("OPEX (Rs Crore)")
+    ax4.grid(True, alpha=0.25)
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"\n  Pyomo dashboard plot saved → {output_path}")
+    plt.close()
