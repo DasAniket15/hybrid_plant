@@ -289,12 +289,12 @@ def build_model(params: dict[str, Any]) -> pyo.ConcreteModel:
     m.con_gen_wind_ub  = pyo.Constraint(m.Y, m.T, rule=_gen_wind_ub)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # §6a-extra  PPA capacity == installed AC capacity (solar + wind)
-    # Capacity charges scale with ppa_mw; without this the solver exploits the
-    # unconstrained upper-bound to eliminate the PPA cap constraint for free.
+    # §6a-extra  PPA capacity ≤ installed AC capacity (solar + wind)
+    # Equality was removed: the objective now penalises large ppa_mw via
+    # capacity charges, so the solver finds the cost-optimal PPA size.
     # ─────────────────────────────────────────────────────────────────────────
-    m.con_ppa_equals_installed = pyo.Constraint(
-        expr=m.ppa_mw == m.solar_mw_0 + m.wind_mw_0
+    m.con_ppa_installed_ub = pyo.Constraint(
+        expr=m.ppa_mw <= m.solar_mw_0 + m.wind_mw_0
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -459,6 +459,7 @@ def build_model(params: dict[str, Any]) -> pyo.ConcreteModel:
     # §7  Objective: maximise discounted NPV (revenue - opex - debt - roe)
     # ─────────────────────────────────────────────────────────────────────────
     disc = params["discount_factor"]
+    cap_charge_annual = params["capacity_charge_rs_per_mw_per_month"] * 12.0 * m.ppa_mw
 
     def _revenue(y):
         return sum(
@@ -471,7 +472,8 @@ def build_model(params: dict[str, Any]) -> pyo.ConcreteModel:
 
     def _obj_rule(m_):
         return sum(
-            disc[y] * (_revenue(y) - _opex(y) - _debt_service(y) - roe_payment)
+            disc[y] * (_revenue(y) - _opex(y) - _debt_service(y) - roe_payment
+                       - cap_charge_annual)
             for y in range(1, Y + 1)
         )
 
