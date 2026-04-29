@@ -1,11 +1,18 @@
 """
 augmentation_pre_analysis.py
 ─────────────────────────────
-Pre-analysis step for the augmentation engine redesign.
+Pre-analysis step for the augmentation engine.
 
 Derives the contractual CUF floor, shortfall windows, and search bounds
 from the Phase-1 baseline energy projection — before any augmentation
 optimisation is run.
+
+Both BESS and solar augmentation are event-based: neither asset class is
+oversized at Year 1.  Instead the optimizer chooses *when* to deploy new
+capacity (any year ≥ 2) and *how much* to add at each event.
+
+Each new solar cohort has its own age-based degradation curve, exactly as
+each new BESS cohort does.
 
 This module is intentionally independent of AugmentationEngine; it
 produces structured inputs (PreAnalysisResult) that the engine consumes.
@@ -29,17 +36,18 @@ class SearchBounds:
 
     Attributes
     ----------
-    s0_max   : max extra solar DC MWp (0.0 if solar oversize is disabled)
-    x0_max   : max extra BESS containers added at Year 1
-    k_max    : max containers added per augmentation event
-    year_min : earliest augmentation year (always 2)
-    year_max : latest augmentation year (= project tenure)
+    x0_max              : max extra BESS containers added at Year 1
+    k_max               : max BESS containers added per future augmentation event
+    solar_event_max_mwp : max solar DC MWp added per augmentation event
+                          (0.0 if solar augmentation is disabled)
+    year_min            : earliest augmentation year (always 2)
+    year_max            : latest augmentation year (= project tenure)
     """
-    s0_max:   float
-    x0_max:   int
-    k_max:    int
-    year_min: int
-    year_max: int
+    x0_max:              int
+    k_max:               int
+    solar_event_max_mwp: float
+    year_min:            int
+    year_max:            int
 
 
 @dataclass
@@ -50,7 +58,10 @@ class PreAnalysisResult:
     Attributes
     ----------
     fixed_cuf_floor     : Year-1 CUF (%), used as the contractual floor.
-    N_max               : Maximum number of augmentation events (≥ 1).
+    N_max               : Maximum number of BESS augmentation events (≥ 1).
+    N_solar_max         : Maximum number of solar augmentation events (≥ 1).
+                          Derived identically to N_max; same shortfall windows
+                          can be addressed by either or both asset classes.
     shortfall_windows   : List of (start_year, end_year) 1-indexed tuples
                           identifying contiguous years where CUF < floor.
     baseline_cuf_series : CUF % per year, shape (tenure,).
@@ -58,6 +69,7 @@ class PreAnalysisResult:
     """
     fixed_cuf_floor:     float
     N_max:               int
+    N_solar_max:         int
     shortfall_windows:   list[tuple[int, int]]
     baseline_cuf_series: np.ndarray
     search_bounds:       SearchBounds
@@ -104,8 +116,9 @@ class AugmentationPreAnalysis:
         Config object with the following attribute paths:
           - config.augmentation["augmentation_optimizer"]["max_extra_containers"]
           - config.augmentation["augmentation_optimizer"]["max_augmentation_containers"]
-          - config.augmentation.get("solar_oversize", {})
-              -> {"enabled": bool, "max_extra_mwp": float}
+          - config.augmentation.get("augmentation_optimizer", {})
+              .get("solar_augmentation", {})
+              -> {"enabled": bool, "max_extra_mwp_per_event": float}
           - config.project["project"]["project_life_years"]   (= tenure)
           - config.project["simulation"].get("hours_per_year", 8760)
     ppa_capacity_mw : float
@@ -129,9 +142,10 @@ class AugmentationPreAnalysis:
         1. Extract the baseline CUF series from delivered_pre_mwh.
         2. Set fixed_cuf_floor = cuf_series[0]  (Year-1 value).
         3. Identify shortfall windows: contiguous years where CUF < floor.
-        4. Derive N_max = max(1, len(shortfall_windows)).
-        5. Build SearchBounds from config.
-        6. Return PreAnalysisResult.
+        4. Derive N_max = max(1, len(shortfall_windows))  [BESS events].
+        5. Derive N_solar_max = N_max  [solar events, same logic].
+        6. Build SearchBounds from config.
+        7. Return PreAnalysisResult.
         """
         ep     = self._baseline_ep
         config = self._config
@@ -154,17 +168,18 @@ class AugmentationPreAnalysis:
         shortfall_mask    = cuf_series < fixed_cuf_floor
         shortfall_windows = _contiguous_windows(shortfall_mask)
 
-        # ── 4. N_max ──────────────────────────────────────────────────────────
-        N_max = max(1, len(shortfall_windows))
+        # ── 4–5. N_max / N_solar_max ──────────────────────────────────────────
+        N_max       = max(1, len(shortfall_windows))
+        N_solar_max = N_max
 
-        # ── 5. SearchBounds ───────────────────────────────────────────────────
+        # ── 6. SearchBounds ───────────────────────────────────────────────────
         aug_cfg = config.augmentation.get("augmentation_optimizer", {})
 
-        solar_oversize_cfg = config.augmentation.get("solar_oversize", {})
-        if solar_oversize_cfg.get("enabled", False):
-            s0_max = float(solar_oversize_cfg["max_extra_mwp"])
+        solar_aug_cfg = aug_cfg.get("solar_augmentation", {})
+        if solar_aug_cfg.get("enabled", False):
+            solar_event_max_mwp = float(solar_aug_cfg.get("max_extra_mwp_per_event", 0.0))
         else:
-            s0_max = 0.0
+            solar_event_max_mwp = 0.0
 
         x0_max   = int(aug_cfg.get("max_extra_containers", 10))
         k_max    = int(aug_cfg.get("max_augmentation_containers", 20))
@@ -172,17 +187,18 @@ class AugmentationPreAnalysis:
         year_max = int(config.project["project"]["project_life_years"])
 
         search_bounds = SearchBounds(
-            s0_max=s0_max,
             x0_max=x0_max,
             k_max=k_max,
+            solar_event_max_mwp=solar_event_max_mwp,
             year_min=year_min,
             year_max=year_max,
         )
 
-        # ── 6. Return ─────────────────────────────────────────────────────────
+        # ── 7. Return ─────────────────────────────────────────────────────────
         return PreAnalysisResult(
             fixed_cuf_floor=fixed_cuf_floor,
             N_max=N_max,
+            N_solar_max=N_solar_max,
             shortfall_windows=shortfall_windows,
             baseline_cuf_series=cuf_series,
             search_bounds=search_bounds,

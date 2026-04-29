@@ -16,48 +16,55 @@ class AugmentationResult:
     """
     Structured output of a completed augmentation optimisation run.
 
+    Solar and BESS augmentation are both event-based; neither asset is
+    oversized at Year 1.  Each solar cohort has its own age-indexed
+    degradation curve, identical in spirit to the multi-cohort BESS model.
+
     Attributes
     ----------
-    initial_extra_containers : x0 — extra containers added at Year 1 beyond the base.
-    s0_extra_mwp           : Extra solar DC MWp deployed at Year 1 (0.0 if none).
-    augmentation_events    : List of {year, containers} dicts for active events (k_i > 0).
-    cuf_floor_fixed_pct    : Fixed Year-1 CUF floor (%), not solar-adjusted.
-    cuf_series             : Annual plant CUF (%) over 25 years for the optimal schedule.
-    baseline_cuf_series    : Annual CUF without any augmentation (for comparison).
-    n_max                  : N_max from pre-analysis.
-    shortfall_windows      : List of (start_yr, end_yr) tuples from pre-analysis.
-    yearly_aug_costs       : Augmentation CAPEX charged each project year (Rs).
-    yearly_delta_savings   : Extra savings vs. no-augmentation baseline per year (Rs).
-    total_pv_aug_cost      : NPV of all augmentation costs (Rs).
-    pv_solar_oversize_cost : PV (discounted) of solar oversizing capex (Rs).
-    solar_oversize_capex_rs: Raw undiscounted solar oversizing capex (s0 * capex_per_mwp, Rs).
-    savings_npv_gain       : NPV gain in client savings from augmented delivery (Rs).
-    final_score            : Net objective value = savings_npv_gain - pv_bess_capex - pv_solar_capex (Rs).
-    n_trials               : Total Optuna trials run.
-    n_feasible             : Feasible trials (CUF-compliant) found.
+    initial_extra_containers  : x0 — extra BESS containers added at Year 1 beyond base.
+    bess_augmentation_events  : [{year, containers}, ...] for active BESS events (k_i > 0).
+    solar_augmentation_events : [{year, mwp}, ...] for active solar events (MWp > threshold).
+
+    cuf_floor_fixed_pct       : Fixed Year-1 CUF floor (%), the contractual minimum.
+    cuf_series                : Annual plant CUF (%) over project life for optimal schedule.
+    baseline_cuf_series       : Annual CUF without any augmentation (for comparison).
+    n_max                     : N_max (BESS events) from pre-analysis.
+    shortfall_windows         : [(start_yr, end_yr), ...] from pre-analysis.
+
+    yearly_bess_aug_costs     : BESS augmentation CAPEX per project year (Rs), shape (life,).
+    yearly_solar_aug_costs    : Solar augmentation CAPEX per project year (Rs), shape (life,).
+    yearly_delta_savings      : Extra savings vs. no-augmentation baseline per year (Rs).
+    total_pv_bess_aug_cost    : NPV of all BESS augmentation CAPEX (Rs).
+    total_pv_solar_aug_cost   : NPV of all solar augmentation CAPEX (Rs).
+    savings_npv_gain          : NPV gain in client savings from augmented delivery (Rs).
+    final_score               : Net objective = savings_npv_gain − bess_capex − solar_capex (Rs).
+
+    n_trials                  : Total Optuna trials run.
+    n_feasible                : Feasible trials (CUF-compliant) found.
     """
 
     # --- schedule ---
-    initial_extra_containers:   int
-    s0_extra_mwp:               float
-    augmentation_events:        list[dict]         # [{year, containers}, ...]
+    initial_extra_containers:  int
+    bess_augmentation_events:  list[dict]   # [{year, containers}, ...]
+    solar_augmentation_events: list[dict]   # [{year, mwp}, ...]
 
     # --- CUF ---
-    cuf_floor_fixed_pct:        float              # fixed Year-1 CUF floor (%)
-    cuf_series:                 np.ndarray         # shape (project_life,)
-    baseline_cuf_series:        np.ndarray         # shape (project_life,)
-    n_max:                      int
-    shortfall_windows:          list[tuple[int, int]]  # [(start_yr, end_yr), ...]
+    cuf_floor_fixed_pct:       float
+    cuf_series:                np.ndarray   # shape (project_life,)
+    baseline_cuf_series:       np.ndarray   # shape (project_life,)
+    n_max:                     int
+    shortfall_windows:         list[tuple[int, int]]
 
     # --- economics ---
-    yearly_aug_costs:           np.ndarray         # shape (project_life,)  Rs
-    yearly_delta_savings:       np.ndarray         # shape (project_life,)  Rs
-    total_pv_aug_cost:          float              # Rs
-    pv_solar_oversize_cost:     float              # Rs (discounted PV of solar capex)
-    solar_oversize_capex_rs:    float              # Rs (raw undiscounted solar capex, s0 * capex_per_mwp)
-    savings_npv_gain:           float              # Rs
-    final_score:                float              # Rs (net objective = savings - capex)
+    yearly_bess_aug_costs:     np.ndarray   # shape (project_life,)  Rs
+    yearly_solar_aug_costs:    np.ndarray   # shape (project_life,)  Rs
+    yearly_delta_savings:      np.ndarray   # shape (project_life,)  Rs
+    total_pv_bess_aug_cost:    float        # Rs
+    total_pv_solar_aug_cost:   float        # Rs
+    savings_npv_gain:          float        # Rs
+    final_score:               float        # Rs  (net objective)
 
     # --- solver stats ---
-    n_trials:                   int
-    n_feasible:                 int
+    n_trials:                  int
+    n_feasible:                int

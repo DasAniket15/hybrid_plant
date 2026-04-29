@@ -1,29 +1,31 @@
 """
 augmentation_engine.py
 ──────────────────────
-Phase-2 BESS + solar augmentation lifecycle optimizer (v4 redesign).
+Phase-2 joint Solar + BESS augmentation lifecycle optimizer.
 
-Takes a PreAnalysisResult (containing the fixed contractual CUF floor,
-N_max, shortfall windows, and search bounds) plus the Phase-1 sim params
-and searches for the most economical mix of:
-
-  - upfront solar oversizing  (s0, extra DC MWp)
-  - upfront BESS oversizing   (x0, extra containers)
-  - up to N_max BESS augmentation events (year_i, k_i)
-
-that keeps annual plant CUF ≥ the fixed Year-1 floor across all project
-years.
+Both asset classes are augmented in an event-based, forward-looking manner:
+  - No upfront oversizing at Year 1 for either asset.
+  - The optimizer chooses *when* to deploy new capacity (year ≥ 2) and *how
+    much* to add, evaluating the full project lifetime at every trial.
+  - Each new solar cohort and each new BESS cohort ages independently from
+    the year it is deployed.
 
 Multi-Cohort BESS Model
 ───────────────────────
-  Each cohort ages independently using the SOH curve indexed from its
-  deployment year.
-
   total_mwh(t) = (base + x0) × size × SOH(t)
                + Σ_i  k_i × size × SOH(t − y_i + 1)   [for y_i ≤ t]
 
-  Effective SOH passed to PlantEngine:
-    effective_soh(t) = total_mwh(t) / (total_containers(t) × size)
+  effective_soh(t) = total_mwh(t) / (total_containers(t) × size)
+
+Multi-Cohort Solar Model
+────────────────────────
+  total_solar_ac_mw(t) = base_solar_mw × solar_eff[t]
+                        + Σ_j  (mwp_j / dc_ac_ratio) × solar_eff[t − s_j + 1]
+                                                        [for s_j ≤ t]
+
+  Each cohort degrades from its own deployment year (age 1 = first year of
+  operation), so a cohort deployed at Year 5 uses solar_eff[1] in Year 5,
+  solar_eff[2] in Year 6, etc.
 
 CUF (delivery-based)
 ─────────────────────
@@ -32,8 +34,21 @@ CUF (delivery-based)
 Objective (pure NPV, no penalties)
 ──────────────────────────────────
   Score = Savings_NPV_gain
-        − PV(BESS augmentation CAPEX)
-        − PV(solar oversizing CAPEX)   (charged at Year 1)
+        − PV(BESS augmentation CAPEX)   [x0 at Year 1 + future events]
+        − PV(Solar augmentation CAPEX)  [future events only]
+
+Decision Variables (Optuna)
+───────────────────────────
+  x0                      : int, extra BESS containers at Year 1
+  bess_year_{i}, bess_k_{i} : int × N_max  — BESS event year and containers
+  solar_year_{j}, solar_mwp_{j} : int + float × N_solar_max — solar event year and DC MWp
+    (only sampled when solar_augmentation is enabled in config)
+
+Forward-Looking Design
+──────────────────────
+  Each Optuna trial evaluates the full 25-year CUF trajectory of a proposed
+  schedule.  The optimizer therefore naturally discovers forward-looking,
+  frequency-minimizing solutions rather than year-by-year greedy fixes.
 """
 
 from __future__ import annotations
@@ -56,16 +71,27 @@ from hybrid_plant.finance.savings_model import SavingsModel
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Minimum solar MWp per event to be treated as "active" (avoids floating noise).
+_SOLAR_MWP_THRESHOLD = 0.1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _merge_same_year(events: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Merge augmentation events on the same year by summing their containers."""
+def _merge_same_year_int(events: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge BESS augmentation events on the same year by summing containers."""
     merged: dict[int, int] = {}
     for year, k in events:
         merged[year] = merged.get(year, 0) + k
+    return sorted(merged.items())
+
+
+def _merge_same_year_float(events: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    """Merge solar augmentation events on the same year by summing DC MWp."""
+    merged: dict[int, float] = {}
+    for year, mwp in events:
+        merged[year] = merged.get(year, 0.0) + mwp
     return sorted(merged.items())
 
 
@@ -75,7 +101,7 @@ def _merge_same_year(events: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 class AugmentationEngine:
     """
-    Phase-2 BESS + solar augmentation lifecycle optimizer.
+    Phase-2 joint Solar + BESS augmentation lifecycle optimizer.
 
     Parameters
     ----------
@@ -106,17 +132,15 @@ class AugmentationEngine:
         self._hours_per_year = config.project["simulation"].get("hours_per_year", 8760)
 
         # ── Finance params ────────────────────────────────────────────────────
-        # Caller override first; otherwise compute canonically via LCOEModel.
         self._wacc = sim_params.get("wacc")
         if self._wacc is None:
             self._wacc = LCOEModel(config).wacc
 
-        # Caller override first; otherwise derive from SavingsModel (blended ToD tariff).
         self._discom_tariff = sim_params.get("discom_tariff")
         if self._discom_tariff is None:
             self._discom_tariff = SavingsModel._weighted_discom_tariff(config)
 
-        # ── Solar oversizing economics ────────────────────────────────────────
+        # ── Solar economics ───────────────────────────────────────────────────
         capex_cfg = config.finance["capex"]
         self._solar_capex_per_mwp = float(capex_cfg["solar"]["cost_per_mwp"])
         # ac_dc_ratio in finance.yaml is DC/AC ratio (DC MWp per AC MW).
@@ -144,13 +168,12 @@ class AugmentationEngine:
             root / bess_cfg["degradation"]["file"],
             column="soh",
         )
-        self._max_soh_year = max(self._soh)
 
         # ── PlantEngine (single instance, reused across all simulations) ──────
         self._plant = PlantEngine(config, data)
 
-        # ── Baseline (no-augmentation, no-oversizing) projection ──────────────
-        self._baseline_proj = self._simulate_schedule(s0=0.0, x0=0, events=[])
+        # ── Baseline (no augmentation) projection ─────────────────────────────
+        self._baseline_proj = self._simulate_schedule(x0=0, bess_events=[], solar_events=[])
 
         self._n_feasible = 0
 
@@ -167,44 +190,64 @@ class AugmentationEngine:
         return dict(zip(df["year"].astype(int), df[column.lower()]))
 
     def _cohort_soh(self, cohort_age: int) -> float:
-        """SOH for a cohort that is `cohort_age` years old (age 1 = first year of operation)."""
+        """SOH for a BESS cohort that is `cohort_age` years old (age 1 = first year)."""
         return operating_value(self._soh, cohort_age)
 
-    def _cohort_capacity(
+    def _bess_cohort_capacity(
         self,
         year:            int,
         base_containers: int,
         x0:              int,
-        events:          list[tuple[int, int]],
+        bess_events:     list[tuple[int, int]],
     ) -> tuple[int, float]:
         """
-        Compute total active containers and effective SOH factor for a project year.
+        Compute total active BESS containers and effective SOH factor for a project year.
 
         Returns
         -------
         (total_containers, effective_soh)
-            effective_soh is in [0, 1]; represents weighted average SOH
-            across all deployed cohorts.
         """
         size = self._container_size
 
-        # Cohort 0: base containers + upfront oversizing, deployed at Year 1
-        initial = base_containers + x0
-        total_mwh = initial * size * self._cohort_soh(year)
-        total_containers = initial
+        # Cohort 0: base containers + upfront x0, deployed at Year 1
+        initial    = base_containers + x0
+        total_mwh  = initial * size * self._cohort_soh(year)
+        total_cont = initial
 
-        # Future augmentation cohorts
-        for ev_year, ev_k in events:
+        for ev_year, ev_k in bess_events:
             if ev_k > 0 and year >= ev_year:
                 age = year - ev_year + 1
-                total_mwh += ev_k * size * self._cohort_soh(age)
-                total_containers += ev_k
+                total_mwh  += ev_k * size * self._cohort_soh(age)
+                total_cont += ev_k
 
-        if total_containers == 0:
+        if total_cont == 0:
             return 0, 1.0
 
-        effective_soh = total_mwh / (total_containers * size)
-        return total_containers, effective_soh
+        effective_soh = total_mwh / (total_cont * size)
+        return total_cont, effective_soh
+
+    def _solar_cohort_capacity(
+        self,
+        year:         int,
+        base_solar_mw: float,
+        solar_events:  list[tuple[int, float]],
+    ) -> float:
+        """
+        Compute total solar AC MW for a project year, summing across all cohorts.
+
+        The base cohort uses solar_eff[year] (age = year).
+        Each augmentation cohort uses solar_eff[year − cohort_year + 1] (own age).
+        """
+        total_ac = base_solar_mw * operating_value(self._solar_eff, year)
+
+        for ev_year, ev_mwp in solar_events:
+            if ev_mwp > _SOLAR_MWP_THRESHOLD and year >= ev_year:
+                cohort_age = year - ev_year + 1
+                total_ac += (ev_mwp / self._dc_ac_ratio) * operating_value(
+                    self._solar_eff, cohort_age
+                )
+
+        return total_ac
 
     # ─────────────────────────────────────────────────────────────────────────
     # Lifecycle simulation
@@ -212,33 +255,31 @@ class AugmentationEngine:
 
     def _simulate_schedule(
         self,
-        s0:     float,
-        x0:     int,
-        events: list[tuple[int, int]],
+        x0:          int,
+        bess_events: list[tuple[int, int]],
+        solar_events: list[tuple[int, float]],
     ) -> dict[str, np.ndarray]:
         """
-        Simulate all project years with multi-cohort BESS capacity and optional
-        solar oversizing.
+        Simulate all project years with multi-cohort BESS and solar capacity.
 
         Parameters
         ----------
-        s0     : extra solar DC MWp deployed at Year 1.
-        x0     : extra BESS containers added at Year 1.
-        events : list of (year, k) augmentation events.
+        x0           : extra BESS containers added at Year 1.
+        bess_events  : list of (year, k) BESS augmentation events.
+        solar_events : list of (year, mwp) solar augmentation events.
 
         Returns
         -------
-        dict of per-year arrays: solar_direct_mwh, wind_direct_mwh, battery_mwh,
-        delivered_pre_mwh, delivered_meter_mwh, cuf_series.
+        dict of per-year arrays:
+            solar_direct_mwh, wind_direct_mwh, battery_mwh,
+            delivered_pre_mwh, delivered_meter_mwh, cuf_series.
         """
         sp          = self._sim_params
         life        = self._project_life
         ppa_cap     = sp["ppa_capacity_mw"]
         base_cont   = sp["bess_containers"]
+        base_solar  = sp["solar_capacity_mw"]
         loss_factor = sp["loss_factor"]
-
-        # Convert s0 (extra DC MWp) to extra AC MW via the DC/AC ratio.
-        s0_extra_ac_mw = s0 / self._dc_ac_ratio if self._dc_ac_ratio else 0.0
 
         solar_arr   = np.zeros(life)
         wind_arr    = np.zeros(life)
@@ -248,11 +289,11 @@ class AugmentationEngine:
         cuf_arr     = np.zeros(life)
 
         for i, year in enumerate(range(1, life + 1)):
-            solar_eff = operating_value(self._solar_eff, year)
-            wind_eff  = operating_value(self._wind_eff,  year)
-            total_cont, eff_soh = self._cohort_capacity(year, base_cont, x0, events)
-
-            solar_ac_mw = (sp["solar_capacity_mw"] + s0_extra_ac_mw) * solar_eff
+            wind_eff  = operating_value(self._wind_eff, year)
+            total_cont, eff_soh = self._bess_cohort_capacity(
+                year, base_cont, x0, bess_events
+            )
+            solar_ac_mw = self._solar_cohort_capacity(year, base_solar, solar_events)
             wind_ac_mw  = sp["wind_capacity_mw"] * wind_eff
 
             yr = self._plant.simulate(
@@ -290,34 +331,45 @@ class AugmentationEngine:
         }
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Objective components
+    # Cost computation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_yearly_aug_costs(
+    def _compute_yearly_costs(
         self,
-        x0:     int,
-        events: list[tuple[int, int]],
-    ) -> np.ndarray:
+        x0:          int,
+        bess_events: list[tuple[int, int]],
+        solar_events: list[tuple[int, float]],
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Return per-year BESS augmentation CAPEX as an Rs array, shape (project_life,).
+        Return per-year BESS and solar augmentation CAPEX arrays (Rs), shape (project_life,).
 
-        x0 CAPEX is charged at Year 1 (index 0); each event's CAPEX at its event year.
+        x0 BESS CAPEX is charged at Year 1 (index 0).
+        Each event's CAPEX is charged at its event year.
         """
-        life  = self._project_life
-        size  = self._container_size
-        cpm   = self._aug_cost_per_mwh
-        costs = np.zeros(life)
+        life        = self._project_life
+        size        = self._container_size
+        cpm         = self._aug_cost_per_mwh
+        bess_costs  = np.zeros(life)
+        solar_costs = np.zeros(life)
 
+        # ── BESS ──────────────────────────────────────────────────────────────
         if x0 > 0:
-            costs[0] += x0 * size * cpm
+            bess_costs[0] += x0 * size * cpm
 
-        for ev_year, ev_k in events:
+        for ev_year, ev_k in bess_events:
             if ev_k > 0:
                 idx = ev_year - 1
                 if 0 <= idx < life:
-                    costs[idx] += ev_k * size * cpm
+                    bess_costs[idx] += ev_k * size * cpm
 
-        return costs
+        # ── Solar ─────────────────────────────────────────────────────────────
+        for ev_year, ev_mwp in solar_events:
+            if ev_mwp > _SOLAR_MWP_THRESHOLD:
+                idx = ev_year - 1
+                if 0 <= idx < life:
+                    solar_costs[idx] += ev_mwp * self._solar_capex_per_mwp
+
+        return bess_costs, solar_costs
 
     def _pv(self, annual_series: np.ndarray) -> float:
         """NPV of an annual series (series[0] = Year 1, discounted at t=1)."""
@@ -333,58 +385,55 @@ class AugmentationEngine:
 
     def _objective(self, trial: optuna.Trial) -> float:
         PENALTY = -1e15
-        bounds  = self._pre.search_bounds
-        N_max   = self._pre.N_max
+        bounds   = self._pre.search_bounds
+        N_max    = self._pre.N_max
+        N_solar  = self._pre.N_solar_max
 
-        # ── Decision variables ────────────────────────────────────────────────
-        s0 = (
-            trial.suggest_float("s0", 0.0, bounds.s0_max)
-            if bounds.s0_max > 0
-            else 0.0
-        )
+        # ── BESS decision variables ────────────────────────────────────────────
         x0 = trial.suggest_int("x0", 0, bounds.x0_max)
 
-        raw_events: list[tuple[int, int]] = []
+        raw_bess: list[tuple[int, int]] = []
         for i in range(N_max):
-            y = trial.suggest_int(f"year_{i}", bounds.year_min, bounds.year_max)
-            k = trial.suggest_int(f"k_{i}",    0,               bounds.k_max)
-            raw_events.append((y, k))
+            y = trial.suggest_int(f"bess_year_{i}", bounds.year_min, bounds.year_max)
+            k = trial.suggest_int(f"bess_k_{i}",    0,               bounds.k_max)
+            raw_bess.append((y, k))
 
-        active = [(y, k) for y, k in raw_events if k > 0]
-        events = _merge_same_year(active)
+        active_bess = [(y, k) for y, k in raw_bess if k > 0]
+        bess_events = _merge_same_year_int(active_bess)
+
+        # ── Solar decision variables ──────────────────────────────────────────
+        raw_solar: list[tuple[int, float]] = []
+        if bounds.solar_event_max_mwp > 0:
+            for j in range(N_solar):
+                y   = trial.suggest_int(f"solar_year_{j}", bounds.year_min, bounds.year_max)
+                mwp = trial.suggest_float(f"solar_mwp_{j}", 0.0, bounds.solar_event_max_mwp)
+                raw_solar.append((y, mwp))
+
+        active_solar = [(y, m) for y, m in raw_solar if m > _SOLAR_MWP_THRESHOLD]
+        solar_events = _merge_same_year_float(active_solar)
 
         # ── Simulate & score ──────────────────────────────────────────────────
         try:
-            proj = self._simulate_schedule(s0, x0, events)
+            proj = self._simulate_schedule(x0, bess_events, solar_events)
 
-            # Hard constraint: fixed CUF floor must hold every year
+            # Hard constraint: CUF must meet the fixed floor every year
             if np.any(proj["cuf_series"] < self._pre.fixed_cuf_floor):
                 return PENALTY
 
             # Savings NPV gain: extra meter delivery × DISCOM tariff (Rs/kWh)
-            delta_meter   = (
+            delta_meter      = (
                 proj["delivered_meter_mwh"]
                 - self._baseline_proj["delivered_meter_mwh"]
             )
-            delta_savings = delta_meter * 1000.0 * self._discom_tariff
+            delta_savings    = delta_meter * 1000.0 * self._discom_tariff
             savings_npv_gain = self._pv(delta_savings)
 
-            # PV of BESS augmentation costs
-            aug_costs       = self._compute_yearly_aug_costs(x0, events)
-            pv_bess_aug_cost = self._pv(aug_costs)
+            # PV of BESS and solar augmentation CAPEX
+            bess_costs, solar_costs = self._compute_yearly_costs(x0, bess_events, solar_events)
+            pv_bess  = self._pv(bess_costs)
+            pv_solar = self._pv(solar_costs)
 
-            # PV of solar oversizing CAPEX (charged at Year 1, t=1)
-            pv_solar_oversize_cost = (
-                (s0 * self._solar_capex_per_mwp) / (1 + self._wacc)
-                if s0 > 0 else 0.0
-            )
-
-            score = (
-                savings_npv_gain
-                - pv_bess_aug_cost
-                - pv_solar_oversize_cost
-            )
-
+            score = savings_npv_gain - pv_bess - pv_solar
             self._n_feasible += 1
             return score
 
@@ -398,20 +447,21 @@ class AugmentationEngine:
 
     def run(self, n_trials: int | None = None) -> AugmentationResult:
         """
-        Run the augmentation optimisation and return a structured result.
+        Run the joint Solar + BESS augmentation optimisation.
 
         Parameters
         ----------
         n_trials : override augmentation.yaml n_trials if provided.
         """
-        cfg     = self._aug_cfg
-        solver  = cfg.get("solver", {})
-        trials  = n_trials or int(solver.get("n_trials", 500))
-        seed    = int(solver.get("random_seed", 42))
+        cfg    = self._aug_cfg
+        solver = cfg.get("solver", {})
+        trials = n_trials or int(solver.get("n_trials", 500))
+        seed   = int(solver.get("random_seed", 42))
 
         self._n_feasible = 0
-        N_max  = self._pre.N_max
-        bounds = self._pre.search_bounds
+        N_max   = self._pre.N_max
+        N_solar = self._pre.N_solar_max
+        bounds  = self._pre.search_bounds
 
         study = optuna.create_study(
             direction = "maximize",
@@ -435,60 +485,72 @@ class AugmentationEngine:
 
         best = study.best_trial.params
 
-        # ── Reconstruct best schedule ─────────────────────────────────────────
-        s0_opt = float(best["s0"]) if "s0" in best else 0.0
+        # ── Reconstruct optimal BESS schedule ─────────────────────────────────
         x0_opt = int(best["x0"])
 
-        raw_events_opt: list[tuple[int, int]] = []
+        raw_bess_opt: list[tuple[int, int]] = []
         for i in range(N_max):
-            y = int(best[f"year_{i}"])
-            k = int(best[f"k_{i}"])
-            raw_events_opt.append((y, k))
+            y = int(best[f"bess_year_{i}"])
+            k = int(best[f"bess_k_{i}"])
+            raw_bess_opt.append((y, k))
 
-        active_opt = [(y, k) for y, k in raw_events_opt if k > 0]
-        events_opt = _merge_same_year(active_opt)
+        active_bess_opt = [(y, k) for y, k in raw_bess_opt if k > 0]
+        bess_events_opt = _merge_same_year_int(active_bess_opt)
+
+        # ── Reconstruct optimal solar schedule ────────────────────────────────
+        raw_solar_opt: list[tuple[int, float]] = []
+        if bounds.solar_event_max_mwp > 0:
+            for j in range(N_solar):
+                y   = int(best[f"solar_year_{j}"])
+                mwp = float(best[f"solar_mwp_{j}"])
+                raw_solar_opt.append((y, mwp))
+
+        active_solar_opt = [(y, m) for y, m in raw_solar_opt if m > _SOLAR_MWP_THRESHOLD]
+        solar_events_opt = _merge_same_year_float(active_solar_opt)
 
         # ── Full re-simulation of optimal schedule ────────────────────────────
-        proj_opt  = self._simulate_schedule(s0_opt, x0_opt, events_opt)
-        aug_costs = self._compute_yearly_aug_costs(x0_opt, events_opt)
+        proj_opt = self._simulate_schedule(x0_opt, bess_events_opt, solar_events_opt)
+        bess_costs, solar_costs = self._compute_yearly_costs(
+            x0_opt, bess_events_opt, solar_events_opt
+        )
 
         delta_meter   = (
             proj_opt["delivered_meter_mwh"]
             - self._baseline_proj["delivered_meter_mwh"]
         )
-        delta_savings = delta_meter * 1000.0 * self._discom_tariff
-
-        pv_bess_cost            = self._pv(aug_costs)
-        solar_oversize_capex_rs = s0_opt * self._solar_capex_per_mwp if s0_opt > 0 else 0.0
-        pv_solar_cost           = (
-            solar_oversize_capex_rs / (1 + self._wacc)
-            if s0_opt > 0 else 0.0
-        )
+        delta_savings    = delta_meter * 1000.0 * self._discom_tariff
         savings_npv_gain = self._pv(delta_savings)
+        pv_bess_cost     = self._pv(bess_costs)
+        pv_solar_cost    = self._pv(solar_costs)
         final_score      = savings_npv_gain - pv_bess_cost - pv_solar_cost
 
-        active_events = [
+        active_bess_out = [
             {"year": y, "containers": k}
-            for y, k in events_opt
-            if k > 0   # explicit guard — events_opt is already filtered, but be explicit
+            for y, k in bess_events_opt
+            if k > 0
+        ]
+        active_solar_out = [
+            {"year": y, "mwp": round(m, 2)}
+            for y, m in solar_events_opt
+            if m > _SOLAR_MWP_THRESHOLD
         ]
 
         return AugmentationResult(
-            initial_extra_containers = x0_opt,
-            s0_extra_mwp             = s0_opt,
-            augmentation_events      = active_events,
-            cuf_floor_fixed_pct      = self._pre.fixed_cuf_floor,
-            cuf_series               = proj_opt["cuf_series"],
-            baseline_cuf_series      = self._pre.baseline_cuf_series,
-            n_max                    = N_max,
-            shortfall_windows        = self._pre.shortfall_windows,
-            yearly_aug_costs         = aug_costs,
-            yearly_delta_savings     = delta_savings,
-            total_pv_aug_cost        = pv_bess_cost,
-            pv_solar_oversize_cost   = pv_solar_cost,
-            solar_oversize_capex_rs  = solar_oversize_capex_rs,
-            savings_npv_gain         = savings_npv_gain,
-            final_score              = final_score,
-            n_trials                 = len(study.trials),
-            n_feasible               = self._n_feasible,
+            initial_extra_containers  = x0_opt,
+            bess_augmentation_events  = active_bess_out,
+            solar_augmentation_events = active_solar_out,
+            cuf_floor_fixed_pct       = self._pre.fixed_cuf_floor,
+            cuf_series                = proj_opt["cuf_series"],
+            baseline_cuf_series       = self._pre.baseline_cuf_series,
+            n_max                     = N_max,
+            shortfall_windows         = self._pre.shortfall_windows,
+            yearly_bess_aug_costs     = bess_costs,
+            yearly_solar_aug_costs    = solar_costs,
+            yearly_delta_savings      = delta_savings,
+            total_pv_bess_aug_cost    = pv_bess_cost,
+            total_pv_solar_aug_cost   = pv_solar_cost,
+            savings_npv_gain          = savings_npv_gain,
+            final_score               = final_score,
+            n_trials                  = len(study.trials),
+            n_feasible                = self._n_feasible,
         )
