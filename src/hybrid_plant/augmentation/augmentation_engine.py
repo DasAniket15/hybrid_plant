@@ -1,24 +1,23 @@
 """
 augmentation_engine.py
 ──────────────────────
-Phase-2 BESS augmentation lifecycle optimizer.
+Phase-2 BESS + solar augmentation lifecycle optimizer (v4 redesign).
 
-Takes the Phase-1 solver's optimal plant configuration as fixed, then searches
-for the most economical BESS augmentation schedule that keeps annual plant CUF
-≥ the Year-1 contractual floor for all 25 project years.
+Takes a PreAnalysisResult (containing the fixed contractual CUF floor,
+N_max, shortfall windows, and search bounds) plus the Phase-1 sim params
+and searches for the most economical mix of:
 
-Decision Variables
-──────────────────
-  x0          : int  — extra BESS containers added at Year 1 (upfront oversizing)
-  (y1, k1)    : (int, int) — augmentation event 1: year y1, add k1 containers
-  (y2, k2)    : (int, int) — augmentation event 2: year y2 ≥ y1, add k2 containers
-  (y3, k3)    : (int, int) — augmentation event 3: year y3 ≥ y2, add k3 containers
+  - upfront solar oversizing  (s0, extra DC MWp)
+  - upfront BESS oversizing   (x0, extra containers)
+  - up to N_max BESS augmentation events (year_i, k_i)
 
-  If k_i = 0, event i is unused.  Years are sorted ascending.
+that keeps annual plant CUF ≥ the fixed Year-1 floor across all project
+years.
 
 Multi-Cohort BESS Model
 ───────────────────────
-  Each cohort ages independently using the SOH curve indexed from its deployment year.
+  Each cohort ages independently using the SOH curve indexed from its
+  deployment year.
 
   total_mwh(t) = (base + x0) × size × SOH(t)
                + Σ_i  k_i × size × SOH(t − y_i + 1)   [for y_i ≤ t]
@@ -30,16 +29,11 @@ CUF (delivery-based)
 ─────────────────────
   CUF_t = delivered_pre_mwh[t] / (ppa_capacity_mw × hours_per_year) × 100
 
-  The floor is derived from Phase-1 Year-1 delivered energy — same formula,
-  fully consistent across all years.
-
-Objective
-─────────
+Objective (pure NPV, no penalties)
+──────────────────────────────────
   Score = Savings_NPV_gain
-        − PV(augmentation CAPEX + O&M)
-        − Penalty_events
-        − Penalty_late
-        − Penalty_oversize
+        − PV(BESS augmentation CAPEX)
+        − PV(solar oversizing CAPEX)   (charged at Year 1)
 """
 
 from __future__ import annotations
@@ -52,42 +46,81 @@ import numpy as np
 import optuna
 
 from hybrid_plant._paths import find_project_root
+from hybrid_plant.augmentation.augmentation_pre_analysis import PreAnalysisResult
 from hybrid_plant.augmentation.augmentation_result import AugmentationResult
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
+from hybrid_plant.finance.lcoe_model import LCOEModel
+from hybrid_plant.finance.savings_model import SavingsModel
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Module helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _merge_same_year(events: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge augmentation events on the same year by summing their containers."""
+    merged: dict[int, int] = {}
+    for year, k in events:
+        merged[year] = merged.get(year, 0) + k
+    return sorted(merged.items())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engine
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AugmentationEngine:
     """
-    Phase-2 BESS augmentation lifecycle optimizer.
+    Phase-2 BESS + solar augmentation lifecycle optimizer.
 
     Parameters
     ----------
-    config      : FullConfig
-    data        : dict  — time-series arrays from data_loader
-    base_result : SolverResult  — output of Phase-1 SolverEngine.run()
+    pre        : PreAnalysisResult — output of AugmentationPreAnalysis.run().
+    sim_params : dict — Phase-1 baseline simulation parameters
+                 (ppa_capacity_mw, solar_capacity_mw, wind_capacity_mw,
+                 bess_containers, charge_c_rate, discharge_c_rate,
+                 dispatch_priority, bess_charge_source, loss_factor, …).
+    config     : FullConfig.
+    data       : dict[str, Any] — time-series arrays from data_loader,
+                 needed by PlantEngine.
     """
 
     def __init__(
         self,
-        config:      FullConfig,
-        data:        dict[str, Any],
-        base_result: Any,           # SolverResult (avoid circular import)
+        pre:        PreAnalysisResult,
+        sim_params: dict[str, Any],
+        config:     FullConfig,
+        data:       dict[str, Any],
     ) -> None:
-        self._config = config
-        self._data   = data
+        self._pre        = pre
+        self._sim_params = sim_params
+        self._config     = config
+        self._data       = data
 
-        # ── Phase-1 baseline params ───────────────────────────────────────────
-        fi = base_result.full_result["finance"]
-        self._sim_params   = base_result.full_result["year1"]["sim_params"]
-        self._project_life = config.project["project"]["project_life_years"]
+        # ── Project-level params ──────────────────────────────────────────────
+        self._project_life   = config.project["project"]["project_life_years"]
         self._hours_per_year = config.project["simulation"].get("hours_per_year", 8760)
 
-        self._wacc          = fi["wacc"]
-        self._discom_tariff = fi["savings_breakdown"]["discom_tariff"]   # Rs/kWh
+        # ── Finance params ────────────────────────────────────────────────────
+        # Caller override first; otherwise compute canonically via LCOEModel.
+        self._wacc = sim_params.get("wacc")
+        if self._wacc is None:
+            self._wacc = LCOEModel(config).wacc
+
+        # Caller override first; otherwise derive from SavingsModel (blended ToD tariff).
+        self._discom_tariff = sim_params.get("discom_tariff")
+        if self._discom_tariff is None:
+            self._discom_tariff = SavingsModel._weighted_discom_tariff(config)
+
+        # ── Solar oversizing economics ────────────────────────────────────────
+        capex_cfg = config.finance["capex"]
+        self._solar_capex_per_mwp = float(capex_cfg["solar"]["cost_per_mwp"])
+        # ac_dc_ratio in finance.yaml is DC/AC ratio (DC MWp per AC MW).
+        self._dc_ac_ratio = float(capex_cfg["solar"]["ac_dc_ratio"])
 
         # ── BESS constants ────────────────────────────────────────────────────
         bess_cfg = config.bess["bess"]
@@ -116,22 +149,8 @@ class AugmentationEngine:
         # ── PlantEngine (single instance, reused across all simulations) ──────
         self._plant = PlantEngine(config, data)
 
-        # ── CUF floor: delivery-based CUF from Phase-1 Year-1 result ─────────
-        # The year-1 CUF is the base floor.  Since solar degrades irreversibly
-        # (and BESS augmentation cannot compensate for it), the per-year floor
-        # is scaled by each year's solar operating efficiency so that the
-        # constraint remains physically achievable throughout the project life.
-        ep = fi["energy_projection"]
-        ppa_cap = self._sim_params["ppa_capacity_mw"]
-        cuf_year1 = ep["delivered_pre_mwh"][0] / (ppa_cap * self._hours_per_year) * 100
-        self._cuf_floor = cuf_year1   # kept for display (year-1 base value)
-        self._cuf_floor_per_year = np.array([
-            cuf_year1 * operating_value(self._solar_eff, year)
-            for year in range(1, self._project_life + 1)
-        ])
-
-        # ── Baseline (no-augmentation) projection — computed once ─────────────
-        self._baseline_proj = self._simulate_lifecycle(x0=0, events=[])
+        # ── Baseline (no-augmentation, no-oversizing) projection ──────────────
+        self._baseline_proj = self._simulate_schedule(s0=0.0, x0=0, events=[])
 
         self._n_feasible = 0
 
@@ -191,15 +210,25 @@ class AugmentationEngine:
     # Lifecycle simulation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _simulate_lifecycle(
+    def _simulate_schedule(
         self,
+        s0:     float,
         x0:     int,
         events: list[tuple[int, int]],
     ) -> dict[str, np.ndarray]:
         """
-        Simulate all project years with multi-cohort BESS capacity.
+        Simulate all project years with multi-cohort BESS capacity and optional
+        solar oversizing.
 
-        Returns per-year arrays: solar_direct_mwh, wind_direct_mwh, battery_mwh,
+        Parameters
+        ----------
+        s0     : extra solar DC MWp deployed at Year 1.
+        x0     : extra BESS containers added at Year 1.
+        events : list of (year, k) augmentation events.
+
+        Returns
+        -------
+        dict of per-year arrays: solar_direct_mwh, wind_direct_mwh, battery_mwh,
         delivered_pre_mwh, delivered_meter_mwh, cuf_series.
         """
         sp          = self._sim_params
@@ -207,6 +236,9 @@ class AugmentationEngine:
         ppa_cap     = sp["ppa_capacity_mw"]
         base_cont   = sp["bess_containers"]
         loss_factor = sp["loss_factor"]
+
+        # Convert s0 (extra DC MWp) to extra AC MW via the DC/AC ratio.
+        s0_extra_ac_mw = s0 / self._dc_ac_ratio if self._dc_ac_ratio else 0.0
 
         solar_arr   = np.zeros(life)
         wind_arr    = np.zeros(life)
@@ -220,9 +252,12 @@ class AugmentationEngine:
             wind_eff  = operating_value(self._wind_eff,  year)
             total_cont, eff_soh = self._cohort_capacity(year, base_cont, x0, events)
 
+            solar_ac_mw = (sp["solar_capacity_mw"] + s0_extra_ac_mw) * solar_eff
+            wind_ac_mw  = sp["wind_capacity_mw"] * wind_eff
+
             yr = self._plant.simulate(
-                solar_capacity_mw  = sp["solar_capacity_mw"] * solar_eff,
-                wind_capacity_mw   = sp["wind_capacity_mw"]  * wind_eff,
+                solar_capacity_mw  = solar_ac_mw,
+                wind_capacity_mw   = wind_ac_mw,
                 bess_containers    = total_cont,
                 bess_soh_factor    = eff_soh,
                 charge_c_rate      = sp["charge_c_rate"],
@@ -264,7 +299,7 @@ class AugmentationEngine:
         events: list[tuple[int, int]],
     ) -> np.ndarray:
         """
-        Return per-year augmentation CAPEX as an Rs array, shape (project_life,).
+        Return per-year BESS augmentation CAPEX as an Rs array, shape (project_life,).
 
         x0 CAPEX is charged at Year 1 (index 0); each event's CAPEX at its event year.
         """
@@ -292,91 +327,63 @@ class AugmentationEngine:
             for t, v in enumerate(annual_series)
         )
 
-    def _compute_score(
-        self,
-        proj:     dict[str, np.ndarray],
-        x0:       int,
-        events:   list[tuple[int, int]],
-        aug_costs: np.ndarray,
-    ) -> float:
-        """Compute the full objective score for a candidate augmentation schedule."""
-        cfg  = self._aug_cfg
-        wacc = self._wacc
-
-        # 1. Savings NPV gain: additional meter delivery × DISCOM tariff (Rs/kWh)
-        delta_meter = proj["delivered_meter_mwh"] - self._baseline_proj["delivered_meter_mwh"]
-        # MWh → kWh × Rs/kWh = Rs
-        delta_savings = delta_meter * 1000.0 * self._discom_tariff
-        savings_npv_gain = self._pv(delta_savings)
-
-        # 2. PV of augmentation costs
-        pv_aug_cost = self._pv(aug_costs)
-
-        # 3. Penalty: number of active augmentation events
-        n_events = sum(1 for _, k in events if k > 0)
-        if x0 > 0:
-            n_events += 1   # oversizing also counts as an "event" for sparsity
-        lambda1      = float(cfg.get("penalties", {}).get("lambda1", 5_000_000))
-        penalty_events = lambda1 * n_events
-
-        # 4. Penalty: late-life augmentation
-        late_start = int(cfg.get("late_penalty_start_year", 21))
-        lambda2    = float(cfg.get("penalties", {}).get("lambda2", 2_000_000))
-        penalty_late = 0.0
-        for ev_year, ev_k in events:
-            if ev_k > 0 and ev_year >= late_start:
-                penalty_late += lambda2 * (ev_year - late_start + 1) * ev_k
-
-        # 5. Penalty: excessive upfront oversizing
-        oversize_limit = int(cfg.get("reasonable_oversize_limit", 5))
-        lambda3         = float(cfg.get("penalties", {}).get("lambda3", 1_000_000))
-        penalty_oversize = lambda3 * max(0, x0 - oversize_limit)
-
-        score = (
-            savings_npv_gain
-            - pv_aug_cost
-            - penalty_events
-            - penalty_late
-            - penalty_oversize
-        )
-        return score
-
     # ─────────────────────────────────────────────────────────────────────────
     # Optuna objective
     # ─────────────────────────────────────────────────────────────────────────
 
     def _objective(self, trial: optuna.Trial) -> float:
         PENALTY = -1e15
-        cfg     = self._aug_cfg
+        bounds  = self._pre.search_bounds
+        N_max   = self._pre.N_max
 
-        max_x0  = int(cfg.get("max_extra_containers",       10))
-        max_k   = int(cfg.get("max_augmentation_containers", 20))
+        # ── Decision variables ────────────────────────────────────────────────
+        s0 = (
+            trial.suggest_float("s0", 0.0, bounds.s0_max)
+            if bounds.s0_max > 0
+            else 0.0
+        )
+        x0 = trial.suggest_int("x0", 0, bounds.x0_max)
 
-        x0 = trial.suggest_int("x0", 0, max_x0)
+        raw_events: list[tuple[int, int]] = []
+        for i in range(N_max):
+            y = trial.suggest_int(f"year_{i}", bounds.year_min, bounds.year_max)
+            k = trial.suggest_int(f"k_{i}",    0,               bounds.k_max)
+            raw_events.append((y, k))
 
-        # Sample three event years independently from [2, 25], then sort to enforce ordering.
-        # Sorting after sampling is standard for ordered-variable problems in Optuna —
-        # the TPE sampler still learns effectively because the sorted mapping is deterministic.
-        raw_y1 = trial.suggest_int("y1_raw", 2, 25)
-        raw_y2 = trial.suggest_int("y2_raw", 2, 25)
-        raw_y3 = trial.suggest_int("y3_raw", 2, 25)
-        y1, y2, y3 = sorted([raw_y1, raw_y2, raw_y3])
+        active = [(y, k) for y, k in raw_events if k > 0]
+        events = _merge_same_year(active)
 
-        k1 = trial.suggest_int("k1", 0, max_k)
-        k2 = trial.suggest_int("k2", 0, max_k)
-        k3 = trial.suggest_int("k3", 0, max_k)
-
-        events = [(y1, k1), (y2, k2), (y3, k3)]
-
+        # ── Simulate & score ──────────────────────────────────────────────────
         try:
-            proj = self._simulate_lifecycle(x0, events)
+            proj = self._simulate_schedule(s0, x0, events)
 
-            # Hard constraint: CUF floor must hold every year
-            if np.any(proj["cuf_series"] < self._cuf_floor_per_year):
+            # Hard constraint: fixed CUF floor must hold every year
+            if np.any(proj["cuf_series"] < self._pre.fixed_cuf_floor):
                 return PENALTY
 
-            aug_costs = self._compute_yearly_aug_costs(x0, events)
-            score     = self._compute_score(proj, x0, events, aug_costs)
+            # Savings NPV gain: extra meter delivery × DISCOM tariff (Rs/kWh)
+            delta_meter   = (
+                proj["delivered_meter_mwh"]
+                - self._baseline_proj["delivered_meter_mwh"]
+            )
+            delta_savings = delta_meter * 1000.0 * self._discom_tariff
+            savings_npv_gain = self._pv(delta_savings)
+
+            # PV of BESS augmentation costs
+            aug_costs       = self._compute_yearly_aug_costs(x0, events)
+            pv_bess_aug_cost = self._pv(aug_costs)
+
+            # PV of solar oversizing CAPEX (charged at Year 1, t=1)
+            pv_solar_oversize_cost = (
+                (s0 * self._solar_capex_per_mwp) / (1 + self._wacc)
+                if s0 > 0 else 0.0
+            )
+
+            score = (
+                savings_npv_gain
+                - pv_bess_aug_cost
+                - pv_solar_oversize_cost
+            )
 
             self._n_feasible += 1
             return score
@@ -403,6 +410,8 @@ class AugmentationEngine:
         seed    = int(solver.get("random_seed", 42))
 
         self._n_feasible = 0
+        N_max  = self._pre.N_max
+        bounds = self._pre.search_bounds
 
         study = optuna.create_study(
             direction = "maximize",
@@ -424,47 +433,62 @@ class AugmentationEngine:
                 "reviewing the CUF floor and search bounds."
             )
 
-        best  = study.best_trial.params
-        max_k = int(cfg.get("max_augmentation_containers", 20))
+        best = study.best_trial.params
 
-        x0_opt = best["x0"]
-        raw_years = sorted([best["y1_raw"], best["y2_raw"], best["y3_raw"]])
-        y1_opt, y2_opt, y3_opt = raw_years
-        k1_opt = best["k1"]
-        k2_opt = best["k2"]
-        k3_opt = best["k3"]
+        # ── Reconstruct best schedule ─────────────────────────────────────────
+        s0_opt = float(best["s0"]) if "s0" in best else 0.0
+        x0_opt = int(best["x0"])
 
-        events_opt = [(y1_opt, k1_opt), (y2_opt, k2_opt), (y3_opt, k3_opt)]
+        raw_events_opt: list[tuple[int, int]] = []
+        for i in range(N_max):
+            y = int(best[f"year_{i}"])
+            k = int(best[f"k_{i}"])
+            raw_events_opt.append((y, k))
 
-        # Full re-simulation of optimal schedule
-        proj_opt  = self._simulate_lifecycle(x0_opt, events_opt)
+        active_opt = [(y, k) for y, k in raw_events_opt if k > 0]
+        events_opt = _merge_same_year(active_opt)
+
+        # ── Full re-simulation of optimal schedule ────────────────────────────
+        proj_opt  = self._simulate_schedule(s0_opt, x0_opt, events_opt)
         aug_costs = self._compute_yearly_aug_costs(x0_opt, events_opt)
 
-        delta_meter   = proj_opt["delivered_meter_mwh"] - self._baseline_proj["delivered_meter_mwh"]
+        delta_meter   = (
+            proj_opt["delivered_meter_mwh"]
+            - self._baseline_proj["delivered_meter_mwh"]
+        )
         delta_savings = delta_meter * 1000.0 * self._discom_tariff
 
-        pv_aug_cost      = self._pv(aug_costs)
+        pv_bess_cost            = self._pv(aug_costs)
+        solar_oversize_capex_rs = s0_opt * self._solar_capex_per_mwp if s0_opt > 0 else 0.0
+        pv_solar_cost           = (
+            solar_oversize_capex_rs / (1 + self._wacc)
+            if s0_opt > 0 else 0.0
+        )
         savings_npv_gain = self._pv(delta_savings)
-        final_score      = self._compute_score(proj_opt, x0_opt, events_opt, aug_costs)
+        final_score      = savings_npv_gain - pv_bess_cost - pv_solar_cost
 
         active_events = [
             {"year": y, "containers": k}
             for y, k in events_opt
-            if k > 0
+            if k > 0   # explicit guard — events_opt is already filtered, but be explicit
         ]
 
         return AugmentationResult(
-            cuf_floor_pct             = self._cuf_floor,
-            cuf_floor_per_year        = self._cuf_floor_per_year,
-            initial_extra_containers  = x0_opt,
-            augmentation_events       = active_events,
-            cuf_series                = proj_opt["cuf_series"],
-            baseline_cuf_series       = self._baseline_proj["cuf_series"],
-            yearly_aug_costs          = aug_costs,
-            yearly_delta_savings      = delta_savings,
-            total_pv_aug_cost         = pv_aug_cost,
-            savings_npv_gain          = savings_npv_gain,
-            final_score               = final_score,
-            n_trials                  = len(study.trials),
-            n_feasible                = self._n_feasible,
+            initial_extra_containers = x0_opt,
+            s0_extra_mwp             = s0_opt,
+            augmentation_events      = active_events,
+            cuf_floor_fixed_pct      = self._pre.fixed_cuf_floor,
+            cuf_series               = proj_opt["cuf_series"],
+            baseline_cuf_series      = self._pre.baseline_cuf_series,
+            n_max                    = N_max,
+            shortfall_windows        = self._pre.shortfall_windows,
+            yearly_aug_costs         = aug_costs,
+            yearly_delta_savings     = delta_savings,
+            total_pv_aug_cost        = pv_bess_cost,
+            pv_solar_oversize_cost   = pv_solar_cost,
+            solar_oversize_capex_rs  = solar_oversize_capex_rs,
+            savings_npv_gain         = savings_npv_gain,
+            final_score              = final_score,
+            n_trials                 = len(study.trials),
+            n_feasible               = self._n_feasible,
         )
