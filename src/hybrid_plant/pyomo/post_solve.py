@@ -139,10 +139,11 @@ def compute_post_solve(
         discharge_total_arr.append(discharge_y)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # §9b  Plant CUF per year
+    # §9b  Plant CUF per year — denominator is installed AC capacity, not ppa_mw
     # ─────────────────────────────────────────────────────────────────────────
+    installed_mw = solar_mw_0 + wind_mw_0
     plant_cuf_arr = [
-        (busbar_mwh_arr[y - 1] / (ppa_mw * T) * 100.0) if ppa_mw > 0 else 0.0
+        (busbar_mwh_arr[y - 1] / (installed_mw * T) * 100.0) if installed_mw > 0 else 0.0
         for y in range(1, Y + 1)
     ]
 
