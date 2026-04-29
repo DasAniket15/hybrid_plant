@@ -56,13 +56,13 @@ class _MockConfig:
 
 def _make_baseline_ep(cuf_pct_series: np.ndarray, ppa_cap: float = 100.0) -> dict:
     """
-    Build a baseline_ep dict whose delivered_meter_mwh is consistent with
-    the given CUF % series.
+    Build a baseline_ep dict whose delivered_pre_mwh is consistent with
+    the given CUF % series (busbar basis, matching the engine's CUF computation).
 
-    delivered_meter_mwh[t] = cuf_pct_series[t] / 100 * ppa_cap * 8760
+    delivered_pre_mwh[t] = cuf_pct_series[t] / 100 * ppa_cap * 8760
     """
     delivered = cuf_pct_series / 100.0 * ppa_cap * 8760.0
-    return {"delivered_meter_mwh": delivered}
+    return {"delivered_pre_mwh": delivered}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ class TestAugmentationPreAnalysis:
     # ── Empty delivered array guard ──────────────────────────────────────────
 
     def test_empty_delivered_raises_value_error(self):
-        ep     = {"delivered_meter_mwh": np.array([])}
+        ep     = {"delivered_pre_mwh": np.array([])}
         config = _MockConfig(project_life=25)
         with pytest.raises(ValueError, match="must not be empty"):
             AugmentationPreAnalysis(ep, config, ppa_capacity_mw=100.0).run()

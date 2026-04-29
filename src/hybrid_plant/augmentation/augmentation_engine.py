@@ -470,6 +470,7 @@ class AugmentationEngine:
         active_events = [
             {"year": y, "containers": k}
             for y, k in events_opt
+            if k > 0   # explicit guard — events_opt is already filtered, but be explicit
         ]
 
         return AugmentationResult(

@@ -9,7 +9,7 @@ augmentation_optimizer:
     max_extra_mwp: 50.0              # upper bound for s0 search (extra solar DC MWp)
 
   wind_oversize:
-    enabled: false                   # toggleable; leave false by default
+    enabled: false             # toggleable; implementation deferred — not yet read by engine
     max_extra_mwp: 20.0
 
   solver:

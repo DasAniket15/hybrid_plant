@@ -99,7 +99,7 @@ class AugmentationPreAnalysis:
     baseline_ep : dict
         Dict returned by EnergyProjection.project(), or a superset thereof.
         Must contain:
-          - ``delivered_meter_mwh``  : np.ndarray, shape (tenure,)
+          - ``delivered_pre_mwh``  : np.ndarray, shape (tenure,)  busbar basis
     config : object
         Config object with the following attribute paths:
           - config.augmentation["augmentation_optimizer"]["max_extra_containers"]
@@ -126,7 +126,7 @@ class AugmentationPreAnalysis:
 
         Steps
         -----
-        1. Extract the baseline CUF series from delivered_meter_mwh.
+        1. Extract the baseline CUF series from delivered_pre_mwh.
         2. Set fixed_cuf_floor = cuf_series[0]  (Year-1 value).
         3. Identify shortfall windows: contiguous years where CUF < floor.
         4. Derive N_max = max(1, len(shortfall_windows)).
@@ -137,9 +137,9 @@ class AugmentationPreAnalysis:
         config = self._config
 
         # ── 1. Baseline CUF series ────────────────────────────────────────────
-        delivered = np.asarray(ep["delivered_meter_mwh"], dtype=float)
+        delivered = np.asarray(ep["delivered_pre_mwh"], dtype=float)
         if len(delivered) == 0:
-            raise ValueError("baseline_ep['delivered_meter_mwh'] must not be empty.")
+            raise ValueError("baseline_ep['delivered_pre_mwh'] must not be empty.")
         ppa_cap        = self._ppa_capacity_mw
         hours_per_year = float(
             config.project["simulation"].get("hours_per_year", 8760)
