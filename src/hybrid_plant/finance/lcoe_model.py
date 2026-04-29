@@ -30,6 +30,7 @@ import numpy as np
 
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.constants import MWH_TO_KWH, PERCENT_TO_DECIMAL
+from hybrid_plant.finance._utils import npv
 
 
 class LCOEModel:
@@ -65,16 +66,6 @@ class LCOEModel:
             self._debt_frac   * self._interest_rate * (1 - self._tax_rate)
             + self._equity_frac * self._roe
         )
-
-    # ── NPV helper ────────────────────────────────────────────────────────────
-
-    def _npv(self, series: list[float]) -> float:
-        """
-        Excel-style NPV: series[0] is Year 1, discounted at t = 1.
-
-            NPV = Σ series[t] / (1 + wacc)^(t+1)   for t = 0 … n-1
-        """
-        return sum(v / (1 + self.wacc) ** (t + 1) for t, v in enumerate(series))
 
     # ── Debt amortisation ─────────────────────────────────────────────────────
 
@@ -136,14 +127,14 @@ class LCOEModel:
         roe_annual   = equity_amount * self._roe
         roe_schedule = [roe_annual] * self._project_life
 
-        npv_interest  = self._npv(interest_schedule)
-        npv_principal = self._npv(principal_schedule)
-        npv_roe       = self._npv(roe_schedule)
-        npv_opex      = self._npv(opex_projection)
+        npv_interest  = npv(interest_schedule,   self.wacc)
+        npv_principal = npv(principal_schedule,  self.wacc)
+        npv_roe       = npv(roe_schedule,         self.wacc)
+        npv_opex      = npv(opex_projection,      self.wacc)
         npv_total     = npv_interest + npv_principal + npv_roe + npv_opex
 
         busbar_kwh    = [float(e) * MWH_TO_KWH for e in busbar_energy_mwh_projection]
-        npv_energy    = self._npv(busbar_kwh)
+        npv_energy    = npv(busbar_kwh, self.wacc)
 
         if npv_energy <= 0:
             raise ValueError("NPV of busbar energy is zero or negative — check energy projection.")

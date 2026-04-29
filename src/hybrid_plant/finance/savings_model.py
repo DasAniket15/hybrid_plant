@@ -37,6 +37,7 @@ import numpy as np
 
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.constants import MWH_TO_KWH
+from hybrid_plant.finance._utils import npv
 
 
 class SavingsModel:
@@ -99,12 +100,6 @@ class SavingsModel:
         )
         return lt_fraction * lt_avg + ht_fraction * ht_avg
 
-    def _npv(self, series: list[float], wacc: float) -> float:
-        """Excel-style NPV: series[0] → Year 1, discounted at t = 1."""
-        return sum(v / (1 + wacc) ** (t + 1) for t, v in enumerate(series))
-
-    # ─────────────────────────────────────────────────────────────────────────
-
     def compute(
         self,
         landed_tariff_series:        list[float],
@@ -145,7 +140,7 @@ class SavingsModel:
             annual_re_cost.append(re_cost_t)
             annual_discom_cost.append(discom_cost_t)
 
-        savings_npv = self._npv(annual_savings, wacc)
+        savings_npv = npv(annual_savings, wacc)
 
         return {
             "annual_savings_year1":  annual_savings[0],

@@ -60,10 +60,6 @@ class EnergyProjection:
     data          : dict — time-series data (solar_cuf, wind_cuf, load_profile, …)
     year1_results : dict — output of Year1Engine.evaluate(); must contain
                     ``sim_params`` (stored automatically by Year1Engine).
-
-    The ``solar_capacity_mw``, ``wind_capacity_mw``, and ``loss_factor``
-    keyword arguments are accepted for call-site backward compatibility
-    but are not used — all required values come through sim_params.
     """
 
     def __init__(
@@ -71,10 +67,6 @@ class EnergyProjection:
         config:        FullConfig,
         data:          dict[str, Any],
         year1_results: dict[str, Any],
-        # Kept for backward-compatible call sites; values come from sim_params.
-        solar_capacity_mw: float | None = None,
-        wind_capacity_mw:  float | None = None,
-        loss_factor:       float | None = None,
     ) -> None:
         if "sim_params" not in year1_results:
             raise KeyError(

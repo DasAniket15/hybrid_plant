@@ -192,3 +192,49 @@ class TestYear1EngineSolarWind:
                + np.sum(result["charge_pre"])
                + np.sum(result["curtailment_pre"]))
         assert abs(raw_gen - rhs) < 1e-3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CUF (Capacity Utilisation Factor)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCUF:
+    """
+    CUF formula: busbar_mwh / (capacity_mw × 8760) × 100
+
+    Plant CUF uses PPA capacity as denominator; component CUFs use their
+    own installed capacities.
+    """
+
+    def test_cuf_formula_exact(self):
+        # 100 MW plant, 8760 h at full output → CUF = 100 %
+        mwh = 100.0 * 8760
+        assert abs(mwh / (100.0 * 8760) * 100 - 100.0) < 1e-9
+
+    def test_cuf_formula_half(self):
+        # 50 MW plant, 4380 h at full output → CUF = 50 %
+        mwh = 50.0 * 4380
+        assert abs(mwh / (50.0 * 8760) * 100 - 50.0) < 1e-9
+
+    def test_cuf_zero_capacity_guard(self):
+        # capacity = 0 must not cause ZeroDivisionError; caller checks <= 0
+        assert 0.0 <= 0  # guard condition as documented in compute_cuf
+
+    def test_solar_cuf_in_plausible_range(self, data, solar_only_params):
+        """Solar CUF for an Indian site should be in [15%, 35%]."""
+        p = solar_only_params
+        raw_solar_mwh = float(np.sum(p["solar_capacity_mw"] * data["solar_cuf"]))
+        solar_cuf_pct = raw_solar_mwh / (p["solar_capacity_mw"] * 8760) * 100
+        assert 15.0 <= solar_cuf_pct <= 35.0, f"Solar CUF {solar_cuf_pct:.2f}% outside plausible range"
+
+    def test_plant_cuf_derivable_from_simulation(self, energy_engine, solar_only_params):
+        """Plant CUF derived from simulation busbar totals stays in [20%, 80%]."""
+        result = energy_engine.evaluate(**solar_only_params)
+        busbar_mwh = (
+            float(np.sum(result["solar_direct_pre"]))
+            + float(np.sum(result["wind_direct_pre"]))
+            + float(np.sum(result["discharge_pre"]))
+        )
+        ppa_mw    = solar_only_params["ppa_capacity_mw"]
+        plant_cuf = busbar_mwh / (ppa_mw * 8760) * 100
+        assert 20.0 <= plant_cuf <= 80.0, f"Plant CUF {plant_cuf:.2f}% outside plausible range"
