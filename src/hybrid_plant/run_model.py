@@ -19,6 +19,21 @@ Run
 
 from __future__ import annotations
 
+import sys as _sys
+import os as _os
+# When this file is run as a script, Python inserts its parent directory
+# (src/hybrid_plant/) into sys.path[0], which makes the local pyomo/
+# subpackage shadow the installed pyomo library. Remove it immediately.
+_script_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _sys.path and _sys.path[0] == _script_dir:
+    _sys.path.pop(0)
+del _script_dir, _os
+# Windows terminals default to cp1252 which can't render Unicode box-drawing
+# characters used in the dashboard. Force UTF-8 output.
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+del _sys
+
 import logging
 from pathlib import Path
 
