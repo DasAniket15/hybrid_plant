@@ -206,13 +206,56 @@ class SolverEngine:
 
     # ── Constraint check ──────────────────────────────────────────────────────
 
-    def _is_feasible(self, finance: dict[str, Any]) -> bool:
-        """Return True if savings_npv meets the configured minimum."""
+    def _is_feasible(
+        self,
+        finance: dict[str, Any],
+        year1:   dict[str, Any],
+        params:  dict[str, Any],
+    ) -> bool:
+        """Return True if all configured constraints are satisfied."""
         cfg = self._solver_cfg.get("constraints", {})
+
         npv_constraint = cfg.get("minimum_savings_npv", {})
         if npv_constraint.get("enabled", True):
             if finance["savings_npv"] < npv_constraint.get("min_value", 0):
                 return False
+
+        cuf_constraint = cfg.get("plant_cuf", {})
+        if cuf_constraint.get("enabled", False):
+            total_busbar = (
+                float(np.sum(year1["solar_direct_pre"]))
+                + float(np.sum(year1["wind_direct_pre"]))
+                + float(np.sum(year1["discharge_pre"]))
+            )
+            ppa_mw = params["ppa_capacity_mw"]
+            plant_cuf = (total_busbar / (ppa_mw * 8760) * 100) if ppa_mw > 0 else 0.0
+            if plant_cuf < cuf_constraint.get("min_percent", 0):
+                return False
+            if plant_cuf > cuf_constraint.get("max_percent", 100):
+                return False
+
+        bess_cap_constraint = cfg.get("minimum_bess_capacity", {})
+        if bess_cap_constraint.get("enabled", False):
+            if float(year1["energy_capacity_mwh"]) < bess_cap_constraint.get("min_mwh", 0):
+                return False
+
+        bess_discharge_constraint = cfg.get("minimum_bess_discharge", {})
+        if bess_discharge_constraint.get("enabled", False):
+            annual_discharge_mwh = float(np.sum(year1["discharge_pre"]))
+            if annual_discharge_mwh < bess_discharge_constraint.get("min_annual_mwh", 0):
+                return False
+
+        re_pen_constraint = cfg.get("re_penetration", {})
+        if re_pen_constraint.get("enabled", False):
+            meter_mwh  = float(year1["annual_meter_delivery"])
+            discom_mwh = float(year1["annual_discom"])
+            total_load = meter_mwh + discom_mwh
+            re_penetration = (meter_mwh / total_load * 100) if total_load > 0 else 0.0
+            if re_penetration < re_pen_constraint.get("min_percent", 0):
+                return False
+            if re_penetration > re_pen_constraint.get("max_percent", 100):
+                return False
+
         return True
 
     # ── Optuna objective ──────────────────────────────────────────────────────
@@ -225,8 +268,22 @@ class SolverEngine:
             result  = self._evaluate(params, fast_mode=self._fast_mode)
             finance = result["finance"]
             year1   = result["year1"]
-            feasible    = self._is_feasible(finance)
+            feasible    = self._is_feasible(finance, year1, params)
             savings_npv = finance["savings_npv"]
+
+            _total_busbar = (
+                float(np.sum(year1["solar_direct_pre"]))
+                + float(np.sum(year1["wind_direct_pre"]))
+                + float(np.sum(year1["discharge_pre"]))
+            )
+            _ppa_mw    = params["ppa_capacity_mw"]
+            _plant_cuf = (_total_busbar / (_ppa_mw * 8760) * 100) if _ppa_mw > 0 else 0.0
+
+            _meter_mwh       = float(year1["annual_meter_delivery"])
+            _discom_mwh      = float(year1["annual_discom"])
+            _total_load      = _meter_mwh + _discom_mwh
+            _re_pen          = (_meter_mwh / _total_load * 100) if _total_load > 0 else 0.0
+            _bess_discharge  = float(np.sum(year1["discharge_pre"]))
 
             self._trial_log.append({
                 "trial_number":         trial.number,
@@ -238,6 +295,9 @@ class SolverEngine:
                 "charge_c_rate":        params["charge_c_rate"],
                 "discharge_c_rate":     params["discharge_c_rate"],
                 "bess_mwh":             float(year1["energy_capacity_mwh"]),
+                "bess_discharge_mwh":   round(_bess_discharge, 1),
+                "plant_cuf_pct":        round(_plant_cuf, 2),
+                "re_penetration_pct":   round(_re_pen, 2),
                 "savings_npv_cr":       round(savings_npv / 1e7, 4),
                 "annual_savings_y1_cr": round(finance["annual_savings_year1"] / 1e7, 4),
                 "lcoe":                 round(finance["lcoe_inr_per_kwh"], 4),

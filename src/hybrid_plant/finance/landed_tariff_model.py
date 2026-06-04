@@ -100,14 +100,15 @@ class LandedTariffModel:
             * MONTHS_PER_YEAR
         )
 
-        landed_series:     list[float] = []
-        re_payment_series: list[float] = []
-        wheeling_series:   list[float] = []
-        elec_tax_series:   list[float] = []
-        banking_series:    list[float] = []
-        total_cost_series: list[float] = []
-        capacity_per_kwh_series: list[float] = []
-        lcoe_markup_per_kwh_series: list[float] = []
+        landed_series:          list[float] = []
+        re_payment_series:      list[float] = []
+        wheeling_series:        list[float] = []
+        elec_tax_series:        list[float] = []
+        banking_series:         list[float] = []
+        total_cost_series:      list[float] = []
+        capacity_per_kwh_series:     list[float] = []
+        lcoe_markup_per_kwh_series:  list[float] = []
+        busbar_tariff_series:        list[float] = []
 
         for busbar_mwh, meter_mwh, banked_kwh in zip(
             busbar_energy_mwh_projection,
@@ -138,6 +139,13 @@ class LandedTariffModel:
                 if meter_kwh > 0 else 0.0
             )
 
+            # Busbar tariff = (RE payment + capacity charges) / busbar kWh.
+            # Excludes wheeling and electricity tax — those are grid-side charges.
+            busbar_tariff = (
+                (re_payment + annual_capacity_rs) / busbar_kwh
+                if busbar_kwh > 0 else 0.0
+            )
+
             landed_series.append(landed)
             re_payment_series.append(re_payment)
             wheeling_series.append(wheeling)
@@ -146,6 +154,7 @@ class LandedTariffModel:
             total_cost_series.append(total)
             capacity_per_kwh_series.append(cap_per_kwh)
             lcoe_markup_per_kwh_series.append(lcoe_markup)
+            busbar_tariff_series.append(busbar_tariff)
 
         return {
             # Primary
@@ -158,6 +167,7 @@ class LandedTariffModel:
             "annual_banking":            banking_series,
             "annual_total_cost":         total_cost_series,
             # Per-kWh decomposition of the landed tariff (useful for dashboards)
+            "busbar_tariff_series":            busbar_tariff_series,
             "capacity_charge_per_kwh_series":  capacity_per_kwh_series,
             "lcoe_markup_per_kwh_series":      lcoe_markup_per_kwh_series,
             # Unit rates (for audit)

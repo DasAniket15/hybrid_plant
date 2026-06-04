@@ -8,11 +8,11 @@ capex:
     cost_per_mw: 7.0e7
 
   bess:
-    cost_per_mwh: 0.90e7
+    cost_per_mwh: 0.77e7
 
   transmission:
     cost_per_km: 1.3e7
-    length_km: 100
+    length_km: 10
 
 
 opex:

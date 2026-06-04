@@ -224,6 +224,8 @@ def print_section4(fi):
     print(f"    {'↳ OPEX':<36} : {cr(lcd['npv_opex'])}")
     print(f"  {'NPV Busbar Energy (Bn kWh)':<38} : {round(lcd['npv_energy_kwh'] / 1e9, 4)}")
     print(f"  {'LCOE (Rs/kWh)':<38} : {round(lcoe, 4)}")
+    bts = lt.get("busbar_tariff_series", None)
+
     print(f"\n  {'── LANDED TARIFF BUILD-UP (Year 1)'}")
     print(f"  {'LCOE (busbar)':<38} : {round(lcoe, 4)}")
     print(f"  {'Wheeling charge (Rs/kWh)':<38} : {round(wheeling, 4)}")
@@ -231,6 +233,9 @@ def print_section4(fi):
     print(f"  {'Banking charge (Rs/kWh)':<38} : {round(banking, 4)}")
     print(f"  {'Capacity charge Y1 (Rs/kWh)':<38} : {round(cap_y1, 4)}")
     print(f"  {'Capacity charge Y25 (Rs/kWh)':<38} : {round(cap_y25, 4)}")
+    if bts is not None:
+        print(f"  {'Busbar Tariff Year 1 (Rs/kWh)':<38} : {round(bts[0], 4)}")
+        print(f"  {'Busbar Tariff Year 25 (Rs/kWh)':<38} : {round(bts[-1], 4)}")
     print(f"  {'Landed Tariff Year 1 (Rs/kWh)':<38} : {round(lts[0], 4)}")
     print(f"  {'Landed Tariff Year 25 (Rs/kWh)':<38} : {round(lts[-1], 4)}")
     print(f"  {'DISCOM Tariff wt-avg (Rs/kWh)':<38} : {round(sv['discom_tariff'], 4)}")

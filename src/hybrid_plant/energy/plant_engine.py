@@ -3,42 +3,65 @@ plant_engine.py
 ───────────────
 Pure plant-layer physics — all calculations are PRE-LOSS (busbar basis).
 
-Dispatch sequence each hour
-────────────────────────────
-  1. Direct dispatch  (solar and/or wind → load, up to PPA cap)
-  2. BESS charging    (surplus RE → battery, respecting charge power cap)
-  3. Curtailment      (any remaining surplus after charging)
-  4. Aux consumption  (parasitic draw on active BESS containers)
-  5. BESS discharge   (ToD-aware, priority-ordered — see below)
+Dispatch modes (configured via bess.yaml dispatch block)
+──────────────────────────────────────────────────────────
+Three modes are supported based on ``discharge_hours`` and ``charge_first``:
+
+  Normal RTC  (discharge_hours empty)
+      BESS discharges freely in every hour, driven purely by the ToD
+      reservation planner.  Dispatch sequence each hour:
+        1. Direct dispatch  (solar/wind → load, up to PPA cap)
+        2. BESS charging    (surplus → battery, up to charge power cap)
+        3. Curtailment      (remaining surplus)
+        4. Aux consumption  (parasitic draw on active containers)
+        5. BESS discharge   (ToD-aware — fills shortfall after direct)
+
+  Discharge-window  (discharge_hours non-empty, charge_first = false)
+      BESS discharge is restricted to the listed hours.  Outside the window
+      steps 1–4 run as normal; step 5 is skipped and the BESS holds SOC.
+
+  Charge-first  (discharge_hours non-empty, charge_first = true)
+      Outside the discharge window the BESS charges before any direct
+      dispatch.  Minimises direct solar/wind delivery; maximises charge
+      available for the window.  Sequence outside window:
+        1. BESS charging    (generation → battery, up to charge power cap)
+        2. Direct dispatch  (remaining generation → load)
+        3. Curtailment
+        4. Aux consumption
+        (step 5 omitted — BESS holds SOC for the discharge window)
+      Inside the window the normal 5-step sequence applies.
 
 ToD-aware BESS discharge
 ─────────────────────────
 Discharge priority (highest value first):
-  1. Evening peak shortfall today   (hod 18–21, rate ₹9.182)
-  2. Morning peak shortfall tomorrow (hod  7–10, rate ₹9.182)
-  3. Normal slots today/tonight     (hod  0–6, 15–17, 22–23, rate ₹8.687)
-  4. Solar-offpeak slots            (hod 11–14, rate ₹8.027) — lowest priority
+  1. Evening peak shortfall today    (hod 18–21)
+  2. Morning peak shortfall tomorrow (hod  7–10)
+  3. Normal slots today/tonight      (hod  0–6, 15–17, 22–23)
+  4. Solar-offpeak slots             (hod 11–14) — lowest priority
 
-Two SOC reservations are maintained and updated at two fixed trigger points per day:
+Two SOC reservations are maintained and updated at two fixed trigger points:
 
   hod = 11  (solar window opens)
       • Clear rsrv_morning_next (morning peak just ended)
       • Compute rsrv_fwd_evening: forward estimate of evening peak need,
         bounded by projected SOC at end of charging window.
-        Prevents cheap discharge during solar hours from stealing SOC
-        needed for tonight's evening peak.
 
   hod = 15  (solar window closes, actual SOC known)
       • Zero rsrv_fwd_evening (replaced by definitive value)
       • Set rsrv_evening:      definitive reservation for hod 18–21 today
-      • Set rsrv_morning_next: reservation for hod  7–10 tomorrow,
-        funded from SOC remaining after rsrv_evening
+      • Set rsrv_morning_next: reservation for hod  7–10 tomorrow
 
-Available SOC per period:
-  morning_peak  → soc                               (use the reservation)
-  solar_offpeak → max(soc − rsrv_fwd_evening, 0)
-  normal        → max(soc − rsrv_evening − rsrv_morning_next, 0)
-  evening_peak  → max(soc − rsrv_morning_next, 0)   (protect tomorrow's morning)
+When a discharge window is active the reservation planner only ring-fences
+SOC for hours inside the window; hours outside are zeroed in re_shortfall
+before the planner runs.  In charge-first mode re_surplus for non-window
+hours is also set to the full eligible generation so the planner correctly
+projects post-charging SOC.
+
+Available SOC per period (inside window):
+  morning_peak  → soc
+  solar_offpeak → max(soc - rsrv_fwd_evening, 0)
+  normal        → max(soc - rsrv_evening - rsrv_morning_next, 0)
+  evening_peak  → max(soc - rsrv_morning_next, 0)
 """
 
 from __future__ import annotations
@@ -93,19 +116,16 @@ class PlantEngine:
         # Convenience union (for debug / external reference)
         self.peak_hours: set[int] = self.morning_peak_hods | self.evening_peak_hods
 
-        # ── Dispatch mask (optional client override) ──────────────────────────
-        # Loaded once here; applied at two points in simulate():
-        #   1. Pre-compute pass  — blocked hours zeroed in re_shortfall so the
-        #      ToD reservation planner never ring-fences SOC for them (full block).
-        #   2. Discharge step    — discharge_raw forced to 0 for blocked hours.
-        # Charging is never affected.
-        _mask_cfg = config.bess["bess"].get("dispatch_mask", {})
-        _blocked: set[int] = (
-            {int(h) for h in _mask_cfg.get("blocked_hours", [])}
-            if _mask_cfg.get("enabled", False)
-            else set()
-        )
-        self.discharge_allowed_hods: set[int] = set(range(24)) - _blocked
+        # ── Dispatch window ───────────────────────────────────────────────────
+        # discharge_window_hods : hours when BESS is allowed to discharge.
+        #   Empty set  → normal RTC (no restriction, all hours allowed).
+        #   Non-empty  → discharge window active; BESS holds SOC outside.
+        # charge_first : when window is active, charge BESS before direct
+        #   dispatch during non-window hours (minimise direct RE delivery).
+        _dispatch_cfg = config.bess["bess"].get("dispatch", {})
+        _dh = _dispatch_cfg.get("discharge_hours", [])
+        self.discharge_window_hods: set[int] = {int(h) for h in _dh} if _dh else set()
+        self.charge_first: bool = bool(_dispatch_cfg.get("charge_first", False))
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -178,17 +198,35 @@ class PlantEngine:
         _direct      = np.minimum(_sd + _wd, ppa_capacity_mw)
         re_shortfall = np.maximum(load - _direct * loss_factor, 0.0)
 
-        # Full block: reservation planner treats blocked hours as zero-shortfall
-        # so no SOC is ring-fenced for hours that will never discharge.
-        _hod_arr = np.arange(hours) % 24
-        re_shortfall[~np.isin(_hod_arr, list(self.discharge_allowed_hods))] = 0.0
-
+        # re_surplus: used by ToD reservation planner to estimate future SOC.
+        # Computed first (direct-first basis), then overridden for charge-first
+        # non-window hours so the planner sees the full eligible generation.
         if bess_charge_source == "solar_only":
             re_surplus = np.maximum(_s - _sd, 0.0)
         elif bess_charge_source == "wind_only":
             re_surplus = np.maximum(_w - _wd, 0.0)
         else:  # solar_and_wind
             re_surplus = np.maximum(_s - _sd, 0.0) + np.maximum(_w - _wd, 0.0)
+
+        _hod_arr = np.arange(hours) % 24
+
+        if self.discharge_window_hods:
+            # Discharge window active: planner must not ring-fence SOC for
+            # hours outside the window (BESS will not discharge there).
+            _non_window_mask = ~np.isin(_hod_arr, list(self.discharge_window_hods))
+            re_shortfall[_non_window_mask] = 0.0
+
+            # Charge-first mode: outside the window the BESS absorbs
+            # generation before direct dispatch, so the planner's forward
+            # SOC walk should see the full eligible generation, not just
+            # the surplus remaining after direct dispatch.
+            if self.charge_first:
+                if bess_charge_source == "solar_only":
+                    re_surplus[_non_window_mask] = _s[_non_window_mask]
+                elif bess_charge_source == "wind_only":
+                    re_surplus[_non_window_mask] = _w[_non_window_mask]
+                else:
+                    re_surplus[_non_window_mask] = (_s + _w)[_non_window_mask]
 
         # ── State ────────────────────────────────────────────────────────────
         soc: float = 0.0
@@ -302,119 +340,210 @@ class PlantEngine:
             total_pre    = solar_pre + wind_pre
             required_pre = load[h] / loss_factor
 
-            # ── 1. Direct dispatch ───────────────────────────────────────────
-            if dispatch_priority == "solar_first":
-                solar_d = min(solar_pre, required_pre)
-                wind_d  = min(wind_pre, required_pre - solar_d)
-
-            elif dispatch_priority == "wind_first":
-                wind_d  = min(wind_pre, required_pre)
-                solar_d = min(solar_pre, required_pre - wind_d)
-
-            else:  # proportional
-                if total_pre > 0:
-                    ratio_s = solar_pre / total_pre
-                    solar_d = min(solar_pre, required_pre * ratio_s)
-                    wind_d  = min(wind_pre,  required_pre * (1 - ratio_s))
-                else:
-                    solar_d = wind_d = 0.0
-
-            direct_pre = min(solar_d + wind_d, ppa_capacity_mw)   # apply PPA cap
-
-            solar_d_meter = solar_d    * loss_factor
-            wind_d_meter  = wind_d     * loss_factor
-            shortfall     = max(load[h] - direct_pre * loss_factor, 0.0)
-
-            # ── 2. BESS charging (from surplus) ──────────────────────────────
-            if bess_charge_source == "solar_only":
-                solar_surplus = solar_pre - solar_d
-                wind_surplus  = 0.0
-            elif bess_charge_source == "wind_only":
-                solar_surplus = 0.0
-                wind_surplus  = wind_pre - wind_d
-            else:  # solar_and_wind
-                solar_surplus = solar_pre - solar_d
-                wind_surplus  = wind_pre  - wind_d
-
-            total_surplus = solar_surplus + wind_surplus
-
-            charge_pre = min(total_surplus, charge_power_cap, energy_capacity - soc)
-
-            if total_surplus > 0:
-                solar_charge_pre = charge_pre * (solar_surplus / total_surplus)
-                wind_charge_pre  = charge_pre * (wind_surplus  / total_surplus)
-            else:
-                solar_charge_pre = wind_charge_pre = 0.0
-
-            solar_charge[h] = solar_charge_pre
-            wind_charge[h]  = wind_charge_pre
-            charge_loss[h]  = charge_pre * (1 - self.charge_eff)
-            soc            += charge_pre * self.charge_eff
-            charge[h]       = charge_pre
-
-            # ── 3. Curtailment ───────────────────────────────────────────────
-            used           = solar_d + wind_d + solar_charge_pre + wind_charge_pre
-            curtailment[h] = max(total_pre - used, 0.0)
-
-            # ── 4. Aux consumption (only when BESS has charge) ───────────────
-            if soc > 0:
-                # Each container's effective capacity degrades with SOH, so
-                # ceil(soc / effective_size) may be higher than at nameplate.
-                effective_container_size = self.container_size * bess_soh_factor
-                active_containers = min(
-                    bess_containers,
-                    math.ceil(soc / effective_container_size) if effective_container_size > 0 else bess_containers,
-                )
-                aux_energy  = active_containers * self.aux_per_hour
-                aux_loss[h] = aux_energy
-                soc         = max(soc - aux_energy, 0.0)
-
-            # ── 5. BESS discharge (ToD-aware priority dispatch) ──────────────
-            #
-            # Available SOC depends on which period we're in:
-            #
-            #   morning_peak  → soc  (ring-fenced SOC is FOR this window)
-            #   solar_offpeak → soc − rsrv_fwd_evening
-            #   normal        → soc − rsrv_evening − rsrv_morning_next
-            #   evening_peak  → soc − rsrv_morning_next  (protect tomorrow's morning)
-            #
-            required_discharge_pre = (
-                shortfall / (self.discharge_eff * loss_factor) if shortfall > 0 else 0.0
-            )
-            remaining_headroom = ppa_capacity_mw - direct_pre
-
+            # ToD period flags (shared by all dispatch paths)
             is_morning_peak  = hod in self.morning_peak_hods
             is_evening_peak  = hod in self.evening_peak_hods
             is_solar_offpeak = hod in self.solar_offpeak_hods
 
-            if is_morning_peak:
-                available_soc = soc
-            elif is_evening_peak:
-                available_soc = max(soc - rsrv_morning_next, 0.0)
-            elif is_solar_offpeak:
-                available_soc = max(soc - rsrv_fwd_evening, 0.0)
-            else:  # normal (day or night)
-                available_soc = max(soc - rsrv_evening - rsrv_morning_next, 0.0)
+            # True when BESS discharge is permitted this hour:
+            #   - always True in normal RTC (empty window)
+            #   - True only inside the window otherwise
+            _in_window = (
+                not self.discharge_window_hods
+                or hod in self.discharge_window_hods
+            )
 
-            discharge_raw = min(
-                required_discharge_pre,
-                available_soc,
-                discharge_power_cap,
-                remaining_headroom / self.discharge_eff,  # headroom is on busbar export (direct_pre + discharge_raw×eff ≤ ppa_cap)
-            ) if hod in self.discharge_allowed_hods else 0.0
-            soc -= discharge_raw
+            if not _in_window and self.charge_first:
+                # ══ PATH B — CHARGE-FIRST (outside discharge window) ═════════
+                # BESS absorbs generation before direct dispatch.
+                # Sequence: charge → direct (leftover) → curtailment → aux.
+                # No BESS discharge — SOC is held for the discharge window.
 
-            # Consume reservations as they are used
-            if is_morning_peak:
-                rsrv_morning_next = max(rsrv_morning_next - discharge_raw, 0.0)
-            elif is_evening_peak:
-                rsrv_evening = max(rsrv_evening - discharge_raw, 0.0)
+                # ── 1. BESS charging (generation gets first priority) ────────
+                if bess_charge_source == "solar_only":
+                    _eligible   = solar_pre
+                    _solar_frac = 1.0
+                    _wind_frac  = 0.0
+                elif bess_charge_source == "wind_only":
+                    _eligible   = wind_pre
+                    _solar_frac = 0.0
+                    _wind_frac  = 1.0
+                else:  # solar_and_wind
+                    _eligible   = total_pre
+                    _solar_frac = solar_pre / total_pre if total_pre > 0 else 0.0
+                    _wind_frac  = 1.0 - _solar_frac
 
-            discharge_pre  = discharge_raw * self.discharge_eff   # post-efficiency
-            discharge_post = discharge_pre  * loss_factor          # post-losses at meter
+                charge_pre       = min(_eligible, charge_power_cap, energy_capacity - soc)
+                solar_charge_pre = charge_pre * _solar_frac
+                wind_charge_pre  = charge_pre * _wind_frac
 
+                solar_charge[h] = solar_charge_pre
+                wind_charge[h]  = wind_charge_pre
+                charge_loss[h]  = charge_pre * (1 - self.charge_eff)
+                soc            += charge_pre * self.charge_eff
+                charge[h]       = charge_pre
+
+                # ── 2. Direct dispatch from remaining generation ──────────────
+                remaining_solar = solar_pre - solar_charge_pre
+                remaining_wind  = wind_pre  - wind_charge_pre
+                remaining_total = remaining_solar + remaining_wind
+
+                if dispatch_priority == "solar_first":
+                    solar_d = min(remaining_solar, required_pre)
+                    wind_d  = min(remaining_wind,  required_pre - solar_d)
+                elif dispatch_priority == "wind_first":
+                    wind_d  = min(remaining_wind,  required_pre)
+                    solar_d = min(remaining_solar, required_pre - wind_d)
+                else:  # proportional
+                    if remaining_total > 0:
+                        _ratio_s = remaining_solar / remaining_total
+                        solar_d  = min(remaining_solar, required_pre * _ratio_s)
+                        wind_d   = min(remaining_wind,  required_pre * (1 - _ratio_s))
+                    else:
+                        solar_d = wind_d = 0.0
+
+                direct_pre    = min(solar_d + wind_d, ppa_capacity_mw)
+                solar_d_meter = solar_d * loss_factor
+                wind_d_meter  = wind_d  * loss_factor
+
+                # ── 3. Curtailment ───────────────────────────────────────────
+                used           = solar_charge_pre + wind_charge_pre + solar_d + wind_d
+                curtailment[h] = max(total_pre - used, 0.0)
+
+                # ── 4. Aux consumption ───────────────────────────────────────
+                if soc > 0:
+                    effective_container_size = self.container_size * bess_soh_factor
+                    active_containers = min(
+                        bess_containers,
+                        math.ceil(soc / effective_container_size) if effective_container_size > 0 else bess_containers,
+                    )
+                    aux_energy  = active_containers * self.aux_per_hour
+                    aux_loss[h] = aux_energy
+                    soc         = max(soc - aux_energy, 0.0)
+
+                # No BESS discharge outside window
+                discharge_raw  = 0.0
+                discharge_pre  = 0.0
+                discharge_post = 0.0
+
+            else:
+                # ══ PATH A / C — DIRECT-FIRST dispatch ═══════════════════════
+                # PATH A (_in_window = True):  full 5-step normal dispatch.
+                # PATH C (_in_window = False, charge_first = False):
+                #         steps 1–4 only; BESS holds SOC for the window.
+
+                # ── 1. Direct dispatch ───────────────────────────────────────
+                if dispatch_priority == "solar_first":
+                    solar_d = min(solar_pre, required_pre)
+                    wind_d  = min(wind_pre, required_pre - solar_d)
+
+                elif dispatch_priority == "wind_first":
+                    wind_d  = min(wind_pre, required_pre)
+                    solar_d = min(solar_pre, required_pre - wind_d)
+
+                else:  # proportional
+                    if total_pre > 0:
+                        ratio_s = solar_pre / total_pre
+                        solar_d = min(solar_pre, required_pre * ratio_s)
+                        wind_d  = min(wind_pre,  required_pre * (1 - ratio_s))
+                    else:
+                        solar_d = wind_d = 0.0
+
+                direct_pre = min(solar_d + wind_d, ppa_capacity_mw)
+
+                solar_d_meter = solar_d * loss_factor
+                wind_d_meter  = wind_d  * loss_factor
+                shortfall     = max(load[h] - direct_pre * loss_factor, 0.0)
+
+                # ── 2. BESS charging (from surplus after direct dispatch) ─────
+                if bess_charge_source == "solar_only":
+                    solar_surplus = solar_pre - solar_d
+                    wind_surplus  = 0.0
+                elif bess_charge_source == "wind_only":
+                    solar_surplus = 0.0
+                    wind_surplus  = wind_pre - wind_d
+                else:  # solar_and_wind
+                    solar_surplus = solar_pre - solar_d
+                    wind_surplus  = wind_pre  - wind_d
+
+                total_surplus = solar_surplus + wind_surplus
+                charge_pre    = min(total_surplus, charge_power_cap, energy_capacity - soc)
+
+                if total_surplus > 0:
+                    solar_charge_pre = charge_pre * (solar_surplus / total_surplus)
+                    wind_charge_pre  = charge_pre * (wind_surplus  / total_surplus)
+                else:
+                    solar_charge_pre = wind_charge_pre = 0.0
+
+                solar_charge[h] = solar_charge_pre
+                wind_charge[h]  = wind_charge_pre
+                charge_loss[h]  = charge_pre * (1 - self.charge_eff)
+                soc            += charge_pre * self.charge_eff
+                charge[h]       = charge_pre
+
+                # ── 3. Curtailment ───────────────────────────────────────────
+                used           = solar_d + wind_d + solar_charge_pre + wind_charge_pre
+                curtailment[h] = max(total_pre - used, 0.0)
+
+                # ── 4. Aux consumption (only when BESS has charge) ───────────
+                if soc > 0:
+                    effective_container_size = self.container_size * bess_soh_factor
+                    active_containers = min(
+                        bess_containers,
+                        math.ceil(soc / effective_container_size) if effective_container_size > 0 else bess_containers,
+                    )
+                    aux_energy  = active_containers * self.aux_per_hour
+                    aux_loss[h] = aux_energy
+                    soc         = max(soc - aux_energy, 0.0)
+
+                # ── 5. BESS discharge (ToD-aware) — inside window only ───────
+                #
+                # Available SOC depends on which period we're in:
+                #   morning_peak  → soc
+                #   solar_offpeak → soc - rsrv_fwd_evening
+                #   normal        → soc - rsrv_evening - rsrv_morning_next
+                #   evening_peak  → soc - rsrv_morning_next
+                #
+                if _in_window:
+                    required_discharge_pre = (
+                        shortfall / (self.discharge_eff * loss_factor)
+                        if shortfall > 0 else 0.0
+                    )
+                    remaining_headroom = ppa_capacity_mw - direct_pre
+
+                    if is_morning_peak:
+                        available_soc = soc
+                    elif is_evening_peak:
+                        available_soc = max(soc - rsrv_morning_next, 0.0)
+                    elif is_solar_offpeak:
+                        available_soc = max(soc - rsrv_fwd_evening, 0.0)
+                    else:  # normal (day or night)
+                        available_soc = max(soc - rsrv_evening - rsrv_morning_next, 0.0)
+
+                    discharge_raw = min(
+                        required_discharge_pre,
+                        available_soc,
+                        discharge_power_cap,
+                        remaining_headroom / self.discharge_eff,
+                    )
+                    soc -= discharge_raw
+
+                    # Consume reservations as they are used
+                    if is_morning_peak:
+                        rsrv_morning_next = max(rsrv_morning_next - discharge_raw, 0.0)
+                    elif is_evening_peak:
+                        rsrv_evening = max(rsrv_evening - discharge_raw, 0.0)
+
+                else:
+                    # Outside window, charge_first=False: hold SOC
+                    discharge_raw = 0.0
+
+                discharge_pre  = discharge_raw * self.discharge_eff
+                discharge_post = discharge_pre  * loss_factor
+
+            # ── Array assignments (common to both dispatch paths) ────────────
             discharge[h]      = discharge_pre
-            discharge_loss[h] = discharge_raw * (1 - self.discharge_eff)  # loss on pre-eff energy
+            discharge_loss[h] = discharge_raw * (1 - self.discharge_eff)
             export[h]         = direct_pre + discharge_pre
 
             solar_direct[h]       = solar_d

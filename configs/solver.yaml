@@ -41,7 +41,7 @@ solver:
     bess_containers:
       scope: current
       type: integer
-      min: 0
+      min: 0                 # must include at least 1 container (BESS is mandatory)
       max: 1000
       step: 1
 
@@ -95,6 +95,39 @@ solver:
     minimum_savings_npv:
       enabled: true
       min_value: 0              # project must beat 100% DISCOM baseline
+
+    plant_cuf:
+      enabled: false
+      # Plant CUF = annual busbar MWh / (PPA_MW × 8760) × 100
+      # Set min_percent or max_percent to bound the solver's solution space.
+      # A max of 55 % prevents over-committed small-PPA / large-solar configs.
+      min_percent: 0
+      max_percent: 55
+
+    minimum_bess_discharge:
+      enabled: false
+      # Hard floor on annual BESS discharge energy (busbar MWh).
+      # Only enable for a contractual throughput commitment.
+      # For economic optimisation use minimum_bess_capacity instead.
+      min_annual_mwh: 230500
+
+    minimum_bess_capacity:
+      enabled: false
+      # Minimum BESS energy capacity (MWh) at Year-1 SOH.
+      # Ensures the battery is physically large enough to sustain the required
+      # number of dispatch hours at full load.
+      # Formula: load_MW x discharge_hours / discharge_efficiency
+      #   100 MW x 6 hrs / 0.9384 = 640 MWh  (~128 containers at 5.015 MWh each)
+      min_mwh: 640
+
+    re_penetration:
+      enabled: false
+      # RE penetration = annual meter delivery / annual load × 100
+      # Bounds the fraction of client load covered by RE at the meter.
+      # Example: min 70 % forces the solver to size a plant large enough
+      # to cover at least 70 % of load; max 100 % is a natural ceiling.
+      min_percent: 0
+      max_percent: 55
 
     hourly_re_requirement:      # future scope
       enabled: false

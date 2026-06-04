@@ -23,17 +23,30 @@ bess:
     enabled: true
     salvage_rate_per_mwh: 0
 
-  dispatch_mask:
-    enabled: false
-    # Hours listed here are BLOCKED for BESS discharge.
-    # Uses 0-indexed hours: 0 = midnight–1 am, 23 = 11 pm–midnight.
-    # Charging is never affected — only discharge is blocked.
-    # When enabled=false (default), all hours are freely dispatchable.
+  dispatch:
+    # ── Discharge window ──────────────────────────────────────────────────
+    # Leave discharge_hours empty ([]) for a normal RTC solution — BESS
+    # discharges freely across all 24 hours driven by the ToD reservation
+    # planner.
     #
-    # Full-block semantics: blocked hours are also excluded from the
-    # ToD reservation planner, so no SOC is ring-fenced for them.
-    # This keeps reserved capacity available for unblocked peak hours.
+    # Set discharge_hours to restrict BESS discharge to specific hours only.
+    # Outside those hours the BESS holds its SOC; the reservation planner is
+    # automatically adjusted to ring-fence SOC only for the listed hours.
     #
-    # Example — block discharge during solar offpeak (hours 11–14):
-    #   blocked_hours: [11, 12, 13, 14]
-    blocked_hours: []
+    # charge_first controls what happens to solar/wind generation OUTSIDE
+    # the discharge window:
+    #
+    #   false (default) — direct dispatch serves load first; surplus charges
+    #                     BESS.  BESS just does not discharge outside the window.
+    #
+    #   true            — BESS charging gets first priority; direct dispatch
+    #                     only happens from whatever generation remains after
+    #                     charging.  Minimises direct solar dispatch and
+    #                     maximises charge available for the window.
+    #
+    # Uses 0-indexed hours: 0 = midnight-1 am, 23 = 11 pm-midnight.
+    # Example -- 6-hour evening window with charge-first:
+    #   discharge_hours: [18, 19, 20, 21, 22, 23]
+    #   charge_first: true
+    discharge_hours: [18, 19, 20, 21, 22, 23]       # empty = normal RTC (no restriction)
+    charge_first: true
