@@ -45,9 +45,6 @@ opex:
     percent_of_total_capex: 0.2    # % of total CAPEX
     escalation_percent: 0.0
 
-  augmentation:
-    enabled: false                  # future scope
-
 
 regulatory_charges:
 

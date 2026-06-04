@@ -20,9 +20,9 @@ Run
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
-import math
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -204,17 +204,12 @@ def print_section4(fi):
     sv   = fi["savings_breakdown"]
     lcoe = fi["lcoe_inr_per_kwh"]
 
-    wheeling = lt.get("wheeling_per_kwh", 0.0)
-    elec_tax = lt.get("electricity_tax_per_kwh", 0.0)
-    banking  = lt.get("banking_per_kwh", 0.0)
-
-    cap_series = lt.get("capacity_charge_per_kwh_series", None)
-    if cap_series is not None:
-        cap_y1, cap_y25 = cap_series[0], cap_series[-1]
-    else:
-        energy_charge = wheeling + elec_tax + banking
-        cap_y1  = lts[0]  - lcoe - energy_charge
-        cap_y25 = lts[-1] - lcoe - energy_charge
+    wheeling   = lt["wheeling_per_kwh"]
+    elec_tax   = lt["electricity_tax_per_kwh"]
+    cap_series = lt["capacity_charge_per_kwh_series"]
+    cap_y1     = cap_series[0]
+    cap_y25    = cap_series[-1]
+    bts        = lt["busbar_tariff_series"]
 
     print(f"\n  {'── LCOE BUILD-UP (NPV basis)'}")
     print(f"  {'NPV Total Cost (Rs Crore)':<38} : {cr(lcd['npv_total_cost'])}")
@@ -224,18 +219,15 @@ def print_section4(fi):
     print(f"    {'↳ OPEX':<36} : {cr(lcd['npv_opex'])}")
     print(f"  {'NPV Busbar Energy (Bn kWh)':<38} : {round(lcd['npv_energy_kwh'] / 1e9, 4)}")
     print(f"  {'LCOE (Rs/kWh)':<38} : {round(lcoe, 4)}")
-    bts = lt.get("busbar_tariff_series", None)
 
     print(f"\n  {'── LANDED TARIFF BUILD-UP (Year 1)'}")
     print(f"  {'LCOE (busbar)':<38} : {round(lcoe, 4)}")
     print(f"  {'Wheeling charge (Rs/kWh)':<38} : {round(wheeling, 4)}")
     print(f"  {'Electricity tax (Rs/kWh)':<38} : {round(elec_tax, 4)}")
-    print(f"  {'Banking charge (Rs/kWh)':<38} : {round(banking, 4)}")
     print(f"  {'Capacity charge Y1 (Rs/kWh)':<38} : {round(cap_y1, 4)}")
     print(f"  {'Capacity charge Y25 (Rs/kWh)':<38} : {round(cap_y25, 4)}")
-    if bts is not None:
-        print(f"  {'Busbar Tariff Year 1 (Rs/kWh)':<38} : {round(bts[0], 4)}")
-        print(f"  {'Busbar Tariff Year 25 (Rs/kWh)':<38} : {round(bts[-1], 4)}")
+    print(f"  {'Busbar Tariff Year 1 (Rs/kWh)':<38} : {round(bts[0], 4)}")
+    print(f"  {'Busbar Tariff Year 25 (Rs/kWh)':<38} : {round(bts[-1], 4)}")
     print(f"  {'Landed Tariff Year 1 (Rs/kWh)':<38} : {round(lts[0], 4)}")
     print(f"  {'Landed Tariff Year 25 (Rs/kWh)':<38} : {round(lts[-1], 4)}")
     print(f"  {'DISCOM Tariff wt-avg (Rs/kWh)':<38} : {round(sv['discom_tariff'], 4)}")

@@ -77,14 +77,6 @@ solver:
         - solar_and_wind
       fixed_value: solar_only  # value used while out of scope
 
-    banking_enabled:
-      scope: future
-      type: categorical
-      options:
-        - true
-        - false
-      fixed_value: false         # value used while out of scope
-
 
   # ─────────────────────────────────────────────────────────────────────
   # CONSTRAINTS
@@ -97,7 +89,7 @@ solver:
       min_value: 0              # project must beat 100% DISCOM baseline
 
     plant_cuf:
-      enabled: false
+      enabled: true
       # Plant CUF = annual busbar MWh / (PPA_MW × 8760) × 100
       # Set min_percent or max_percent to bound the solver's solution space.
       # A max of 55 % prevents over-committed small-PPA / large-solar configs.
@@ -112,7 +104,7 @@ solver:
       min_annual_mwh: 230500
 
     minimum_bess_capacity:
-      enabled: false
+      enabled: true
       # Minimum BESS energy capacity (MWh) at Year-1 SOH.
       # Ensures the battery is physically large enough to sustain the required
       # number of dispatch hours at full load.
@@ -129,10 +121,6 @@ solver:
       min_percent: 0
       max_percent: 55
 
-    hourly_re_requirement:      # future scope
-      enabled: false
-      minimum_percent: 0
-      penalty_inr_per_kwh: 0
 
   # ─────────────────────────────────────────────────────────────────────
   # SOLVER SETTINGS

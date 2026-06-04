@@ -34,3 +34,13 @@ Thumbs.db
 *.png
 model_output.png
 solver_validation.png
+
+# Knowledge graph — generated outputs and cache
+graphify-out/cache/
+graphify-out/graph.json
+graphify-out/graph.html
+
+# Claude Code — local settings and runtime files
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/

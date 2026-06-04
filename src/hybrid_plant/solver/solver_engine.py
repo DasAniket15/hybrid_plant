@@ -48,7 +48,6 @@ class SolverResult:
     n_trials_feasible:      int
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Solver engine
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,7 +91,15 @@ class SolverEngine:
         self._solver_cfg = sv
         self._dv         = sv["decision_variables"]
 
-        # Override fixed values from YAML where present (future-scope variables only)
+        self._n_trials    = int(sv.get("n_trials", 300))
+        self._n_jobs      = int(sv.get("n_jobs", 1))
+        self._random_seed = int(sv.get("random_seed", 42))
+        self._fast_mode   = bool(sv.get("fast_mode", True))
+
+        # Copy class-level defaults to an instance dict, then apply YAML overrides.
+        # Without this copy, mutating self._FUTURE_FIXED would modify the shared
+        # class-level dict and contaminate subsequent SolverEngine instances.
+        self._FUTURE_FIXED = dict(self.__class__._FUTURE_FIXED)
         for key, yaml_key in [
             ("dispatch_priority",  "dispatch_priority"),
             ("bess_charge_source", "bess_charge_source"),
@@ -100,11 +107,6 @@ class SolverEngine:
             fv = self._dv.get(yaml_key, {}).get("fixed_value")
             if fv is not None:
                 self._FUTURE_FIXED[key] = fv
-
-        self._n_trials    = int(sv.get("n_trials", 300))
-        self._n_jobs      = int(sv.get("n_jobs", 1))
-        self._random_seed = int(sv.get("random_seed", 42))
-        self._fast_mode   = bool(sv.get("fast_mode", True))
 
         self._trial_log: list[dict[str, Any]] = []
 

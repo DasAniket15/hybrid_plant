@@ -1,8 +1,8 @@
 """
 data_loader.py
 ──────────────
-Loads all time-series CSVs (8760-hour profiles) and degradation curves
-required by the simulation engine.
+Loads all time-series CSVs (8760-hour profiles) required by the simulation
+engine.  Degradation curves are read on-demand by EnergyProjection.
 
 All file paths are resolved relative to the project root so the loader works
 regardless of the working directory.
@@ -115,12 +115,9 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
     dict
         Keys
         ────
-        solar_cuf               : np.ndarray  shape (8760,), fraction [0–1]
-        wind_cuf                : np.ndarray  shape (8760,), fraction [0–1]
-        load_profile            : np.ndarray  shape (8760,), MWh per hour
-        solar_degradation_curve : pd.DataFrame  columns [year, efficiency]
-        wind_degradation_curve  : pd.DataFrame  columns [year, efficiency]
-        bess_soh_curve          : pd.DataFrame  columns [year, soh]
+        solar_cuf    : np.ndarray  shape (8760,), fraction [0–1]
+        wind_cuf     : np.ndarray  shape (8760,), fraction [0–1]
+        load_profile : np.ndarray  shape (8760,), MWh per hour
     """
     gen_cfg  = config.project["generation"]
     load_cfg = config.project["load"]
@@ -139,16 +136,8 @@ def load_timeseries_data(config: FullConfig) -> dict[str, Any]:
         load_profile = load_profile / MWH_TO_KWH   # kWh → MWh
     _validate_8760(load_profile, "Load profile")
 
-    # ── Degradation curves ───────────────────────────────────────────────────
-    solar_deg = pd.read_csv(_resolve(gen_cfg["solar"]["degradation"]["file"]))
-    wind_deg  = pd.read_csv(_resolve(gen_cfg["wind"]["degradation"]["file"]))
-    bess_deg  = pd.read_csv(_resolve(config.bess["bess"]["degradation"]["file"]))
-
     return {
-        "solar_cuf":                solar_cuf,
-        "wind_cuf":                 wind_cuf,
-        "load_profile":             load_profile,
-        "solar_degradation_curve":  solar_deg,
-        "wind_degradation_curve":   wind_deg,
-        "bess_soh_curve":           bess_deg,
+        "solar_cuf":   solar_cuf,
+        "wind_cuf":    wind_cuf,
+        "load_profile": load_profile,
     }
