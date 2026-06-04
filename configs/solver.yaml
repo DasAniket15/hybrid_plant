@@ -30,7 +30,7 @@ solver:
       scope: current
       type: continuous
       min: 0
-      max: 0
+      max: 1000
 
     ppa_capacity_mw:
       scope: current
@@ -122,7 +122,7 @@ solver:
       max_percent: 55
 
     hourly_re_penetration_penalty:
-      enabled: true
+      enabled: false
       # Soft economic penalty applied whenever RE delivery at the meter falls
       # below min_percent of client load in any individual hour.
       #
