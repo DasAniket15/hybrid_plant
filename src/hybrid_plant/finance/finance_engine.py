@@ -109,10 +109,21 @@ class FinanceEngine:
         )
 
         # ── 6. Client savings ─────────────────────────────────────────────────
+        hrep = (
+            self._config.solver["solver"]
+            .get("constraints", {})
+            .get("hourly_re_penetration_penalty", {})
+        )
+        annual_re_pen_cost = (
+            list(projection["re_pen_cost_inr"])
+            if hrep.get("enabled", False) else None
+        )
+
         savings_result = self._savings.compute(
             landed_tariff_series        = landed_result["landed_tariff_series"],
             meter_energy_mwh_projection = meter_mwh,
             wacc                        = wacc,
+            annual_re_pen_cost          = annual_re_pen_cost,
         )
 
         return {

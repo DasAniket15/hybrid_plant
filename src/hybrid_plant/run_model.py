@@ -234,7 +234,7 @@ def print_section4(fi):
     print(f"  {'Saving vs DISCOM Y1 (Rs/kWh)':<38} : {round(sv['discom_tariff'] - lts[0], 4)}")
 
 
-def print_section5(fi):
+def print_section5(fi, y1, config):
     sep("SECTION 5 — CLIENT SAVINGS")
     sv             = fi["savings_breakdown"]
     lts            = fi["landed_tariff_series"]
@@ -252,6 +252,26 @@ def print_section5(fi):
     print(f"  {'Savings NPV (Rs Crore)':<38} : {cr(fi['savings_npv'])}")
     print(f"  {'Cumulative Savings 25 Yr (Rs Cr)':<38} : {cr(cum_savings_25)}")
     print(f"  {'Payback Year':<38} : {'Year ' + str(payback_yr) if payback_yr else 'Beyond project life'}")
+
+    hrep = (
+        config.solver["solver"]
+        .get("constraints", {})
+        .get("hourly_re_penetration_penalty", {})
+    )
+    if hrep.get("enabled", False):
+        pen_hours    = hrep.get("penalty_hours", [])
+        pen_hours_str = (
+            ", ".join(str(h) for h in pen_hours) if pen_hours else "all hours"
+        )
+        shortfall_y1  = float(y1.get("annual_re_pen_shortfall_mwh", 0.0))
+        pen_cost_y1   = float(y1.get("annual_re_pen_cost_inr", 0.0))
+        pen_cost_25yr = sum(sv.get("annual_re_pen_cost", []))
+        print(f"\n  {'── RE PENETRATION PENALTY'}")
+        print(f"  {'Floor (%)':<38} : {hrep.get('min_percent', 0.0)} %")
+        print(f"  {'Penalty hours (1-indexed)':<38} : {pen_hours_str}")
+        print(f"  {'Shortfall Year-1 (MWh)':<38} : {round(shortfall_y1, 1)}")
+        print(f"  {'Penalty Cost Year-1 (Rs Crore)':<38} : {cr(pen_cost_y1)}")
+        print(f"  {'Penalty Cost 25-Yr (Rs Crore)':<38} : {cr(pen_cost_25yr)}")
 
 
 def print_section6(fi):
@@ -692,7 +712,7 @@ if __name__ == "__main__":
     print_section2(fi)
     print_section3(params, y1, fi, data, energy_engine)
     print_section4(fi)
-    print_section5(fi)
+    print_section5(fi, y1, config)
     print_section6(fi)
     print_section7(fi)
 

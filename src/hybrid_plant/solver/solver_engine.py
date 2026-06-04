@@ -287,6 +287,11 @@ class SolverEngine:
             _re_pen          = (_meter_mwh / _total_load * 100) if _total_load > 0 else 0.0
             _bess_discharge  = float(np.sum(year1["discharge_pre"]))
 
+            _annual_shortfall = float(year1.get("annual_re_pen_shortfall_mwh", 0.0))
+            _re_pen_cost_cr   = round(
+                float(year1.get("annual_re_pen_cost_inr", 0.0)) / 1e7, 4
+            )
+
             self._trial_log.append({
                 "trial_number":         trial.number,
                 "feasible":             feasible,
@@ -300,6 +305,8 @@ class SolverEngine:
                 "bess_discharge_mwh":   round(_bess_discharge, 1),
                 "plant_cuf_pct":        round(_plant_cuf, 2),
                 "re_penetration_pct":   round(_re_pen, 2),
+                "re_pen_shortfall_mwh": round(_annual_shortfall, 2),
+                "re_pen_cost_y1_cr":    _re_pen_cost_cr,
                 "savings_npv_cr":       round(savings_npv / 1e7, 4),
                 "annual_savings_y1_cr": round(finance["annual_savings_year1"] / 1e7, 4),
                 "lcoe":                 round(finance["lcoe_inr_per_kwh"], 4),

@@ -54,6 +54,7 @@ from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.plant_engine import PlantEngine
+from hybrid_plant.energy.year1_engine import _build_hourly_discom_tariff, _build_penalty_mask
 
 
 class EnergyProjection:
@@ -106,6 +107,27 @@ class EnergyProjection:
         self._battery_1   = float(np.sum(year1_results["discharge_pre"]))
         self._loss_factor = self._sim_params["loss_factor"]
 
+        # Hourly RE penetration penalty config (used in both modes).
+        hrep = (
+            config.solver["solver"]
+            .get("constraints", {})
+            .get("hourly_re_penetration_penalty", {})
+        )
+        self._re_pen_enabled = hrep.get("enabled", False)
+        self._re_pen_min_pct = hrep.get("min_percent", 0.0) / 100.0
+        self._load_profile   = data["load_profile"]
+
+        # Blended hourly DISCOM ToD tariff array — reused across all years.
+        self._hourly_discom_tariff = _build_hourly_discom_tariff(
+            config, n_hours=len(data["load_profile"])
+        )
+
+        # Boolean mask: True for hours subject to the RE penetration penalty.
+        self._re_pen_mask = _build_penalty_mask(config, n_hours=len(data["load_profile"]))
+
+        # Year-1 annual penalty cost (INR) — held constant in fast mode.
+        self._re_pen_cost_1 = float(year1_results.get("annual_re_pen_cost_inr", 0.0))
+
         # One PlantEngine instance, reused across all 25 year simulations.
         self._plant = PlantEngine(config, data)
 
@@ -142,11 +164,12 @@ class EnergyProjection:
         Returns
         -------
         dict
-            solar_direct_mwh    : np.ndarray  shape (project_life,)  busbar, pre-loss
-            wind_direct_mwh     : np.ndarray  shape (project_life,)  busbar, pre-loss
-            battery_mwh         : np.ndarray  shape (project_life,)  busbar, pre-loss
-            delivered_pre_mwh   : np.ndarray  busbar total  (LCOE denominator)
-            delivered_meter_mwh : np.ndarray  at client meter (savings & landed tariff)
+            solar_direct_mwh      : np.ndarray  shape (project_life,)  busbar, pre-loss
+            wind_direct_mwh       : np.ndarray  shape (project_life,)  busbar, pre-loss
+            battery_mwh           : np.ndarray  shape (project_life,)  busbar, pre-loss
+            delivered_pre_mwh     : np.ndarray  busbar total  (LCOE denominator)
+            delivered_meter_mwh   : np.ndarray  at client meter (savings & landed tariff)
+            re_pen_shortfall_mwh  : np.ndarray  annual RE pen shortfall per year (MWh)
         """
         if fast_mode:
             return self._project_fast()
@@ -162,12 +185,17 @@ class EnergyProjection:
         Year-1 totals (``self._solar_1`` etc.) were produced by a Year-1
         simulation with operating values 1.0 (fresh plant), so scaling by
         ``operating_value(curve, year)`` directly yields the year-t total.
+
+        RE penetration penalty: Year-1 annual penalty cost (INR) is held
+        constant across all years.  Sufficient for relative trial ranking;
+        full mode recomputes exact per-year cost from hourly ToD tariffs.
         """
-        solar_arr   = np.zeros(self._project_life)
-        wind_arr    = np.zeros(self._project_life)
-        battery_arr = np.zeros(self._project_life)
-        pre_arr     = np.zeros(self._project_life)
-        meter_arr   = np.zeros(self._project_life)
+        solar_arr    = np.zeros(self._project_life)
+        wind_arr     = np.zeros(self._project_life)
+        battery_arr  = np.zeros(self._project_life)
+        pre_arr      = np.zeros(self._project_life)
+        meter_arr    = np.zeros(self._project_life)
+        re_pen_cost  = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
             s = self._solar_1   * operating_value(self._solar_eff, year)
@@ -179,13 +207,15 @@ class EnergyProjection:
             battery_arr[i] = b
             pre_arr[i]     = s + w + b
             meter_arr[i]   = (s + w + b) * self._loss_factor
+            re_pen_cost[i] = self._re_pen_cost_1
 
         return {
-            "solar_direct_mwh":     solar_arr,
-            "wind_direct_mwh":      wind_arr,
-            "battery_mwh":          battery_arr,
-            "delivered_pre_mwh":    pre_arr,
-            "delivered_meter_mwh":  meter_arr,
+            "solar_direct_mwh":    solar_arr,
+            "wind_direct_mwh":     wind_arr,
+            "battery_mwh":         battery_arr,
+            "delivered_pre_mwh":   pre_arr,
+            "delivered_meter_mwh": meter_arr,
+            "re_pen_cost_inr":     re_pen_cost,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -208,6 +238,7 @@ class EnergyProjection:
         battery_arr = np.zeros(self._project_life)
         pre_arr     = np.zeros(self._project_life)
         meter_arr   = np.zeros(self._project_life)
+        re_pen_cost = np.zeros(self._project_life)
 
         for i, year in enumerate(range(1, self._project_life + 1)):
             solar_eff = operating_value(self._solar_eff, year)
@@ -237,10 +268,20 @@ class EnergyProjection:
             pre_arr[i]     = s + w + b
             meter_arr[i]   = (s + w + b) * sp["loss_factor"]
 
+            if self._re_pen_enabled:
+                meter_hourly   = yr["plant_export_pre"] * sp["loss_factor"]
+                shortfall_raw  = np.maximum(
+                    self._load_profile * self._re_pen_min_pct - meter_hourly, 0.0
+                )
+                shortfall_hour = np.where(self._re_pen_mask, shortfall_raw, 0.0)
+                # Penalty = shortfall (MWh) × 1000 (kWh/MWh) × ToD tariff (INR/kWh)
+                re_pen_cost[i] = float(np.sum(shortfall_hour * self._hourly_discom_tariff)) * 1_000.0
+
         return {
-            "solar_direct_mwh":     solar_arr,
-            "wind_direct_mwh":      wind_arr,
-            "battery_mwh":          battery_arr,
-            "delivered_pre_mwh":    pre_arr,    # busbar — LCOE denominator
-            "delivered_meter_mwh":  meter_arr,  # at meter — savings calc
+            "solar_direct_mwh":    solar_arr,
+            "wind_direct_mwh":     wind_arr,
+            "battery_mwh":         battery_arr,
+            "delivered_pre_mwh":   pre_arr,    # busbar — LCOE denominator
+            "delivered_meter_mwh": meter_arr,  # at meter — savings calc
+            "re_pen_cost_inr":     re_pen_cost,
         }

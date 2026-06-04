@@ -105,6 +105,7 @@ class SavingsModel:
         landed_tariff_series:        list[float],
         meter_energy_mwh_projection: Any,
         wacc:                        float,
+        annual_re_pen_cost:          list[float] | None = None,
     ) -> dict[str, Any]:
         """
         Parameters
@@ -112,6 +113,10 @@ class SavingsModel:
         landed_tariff_series        : list[float]  annual landed tariff (Rs/kWh)
         meter_energy_mwh_projection : array-like   annual RE meter energy (MWh)
         wacc                        : float         discount rate (decimal)
+        annual_re_pen_cost          : list[float] | None
+            Per-year hourly RE penetration penalty cost (INR).  When provided,
+            this is added to the hybrid cost each year, reducing savings.
+            Pass None (or omit) when the constraint is disabled.
 
         Returns
         -------
@@ -125,20 +130,25 @@ class SavingsModel:
         annual_hybrid_cost: list[float] = []
         annual_re_cost:     list[float] = []
         annual_discom_cost: list[float] = []
+        annual_re_pen:      list[float] = []
 
-        for landed_t, meter_mwh_t in zip(landed_tariff_series, meter_energy_mwh_projection):
+        for t, (landed_t, meter_mwh_t) in enumerate(
+            zip(landed_tariff_series, meter_energy_mwh_projection)
+        ):
             re_kwh_t     = float(meter_mwh_t) * MWH_TO_KWH
             discom_kwh_t = self._annual_load_kwh - re_kwh_t
 
             re_cost_t     = re_kwh_t     * landed_t
             discom_cost_t = discom_kwh_t * self._discom_tariff
-            hybrid_t      = re_cost_t + discom_cost_t
+            penalty_t     = annual_re_pen_cost[t] if annual_re_pen_cost is not None else 0.0
+            hybrid_t      = re_cost_t + discom_cost_t + penalty_t
             savings_t     = self._baseline_cost - hybrid_t
 
             annual_savings.append(savings_t)
             annual_hybrid_cost.append(hybrid_t)
             annual_re_cost.append(re_cost_t)
             annual_discom_cost.append(discom_cost_t)
+            annual_re_pen.append(penalty_t)
 
         savings_npv = npv(annual_savings, wacc)
 
@@ -150,6 +160,7 @@ class SavingsModel:
             "annual_hybrid_cost":    annual_hybrid_cost,
             "annual_re_cost":        annual_re_cost,
             "annual_discom_cost":    annual_discom_cost,
+            "annual_re_pen_cost":    annual_re_pen,
             "discom_tariff":         self._discom_tariff,
             "annual_load_kwh":       self._annual_load_kwh,
         }

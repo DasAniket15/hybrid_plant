@@ -41,7 +41,7 @@ solver:
     bess_containers:
       scope: current
       type: integer
-      min: 0                 # must include at least 1 container (BESS is mandatory)
+      min: 0
       max: 1000
       step: 1
 
@@ -89,7 +89,7 @@ solver:
       min_value: 0              # project must beat 100% DISCOM baseline
 
     plant_cuf:
-      enabled: true
+      enabled: false
       # Plant CUF = annual busbar MWh / (PPA_MW × 8760) × 100
       # Set min_percent or max_percent to bound the solver's solution space.
       # A max of 55 % prevents over-committed small-PPA / large-solar configs.
@@ -104,7 +104,7 @@ solver:
       min_annual_mwh: 230500
 
     minimum_bess_capacity:
-      enabled: true
+      enabled: false
       # Minimum BESS energy capacity (MWh) at Year-1 SOH.
       # Ensures the battery is physically large enough to sustain the required
       # number of dispatch hours at full load.
@@ -120,6 +120,32 @@ solver:
       # to cover at least 70 % of load; max 100 % is a natural ceiling.
       min_percent: 0
       max_percent: 55
+
+    hourly_re_penetration_penalty:
+      enabled: true
+      # Soft economic penalty applied whenever RE delivery at the meter falls
+      # below min_percent of client load in any individual hour.
+      #
+      # Shortfall energy (MWh at meter, per hour h):
+      #   max( load[h] × min_percent/100 − meter_delivery[h], 0 )
+      #
+      # Annual penalty cost (INR):
+      #   sum_h( shortfall_mwh[h] ) × 1000 × penalty_inr_per_kwh
+      #
+      # This cost is added to the hybrid cost each year, reducing savings NPV.
+      # The solver naturally minimises penalty by sizing the plant to meet the
+      # floor.  Unlike the hard re_penetration gate above, no trial is rejected;
+      # instead the penalty flows directly through the economics.
+      min_percent: 50.0            # RE floor applied to every individual hour (%)
+      # Penalty rate = blended ToD DISCOM tariff at the hour the shortfall occurs
+      # (ht_lt_split_percent-weighted blend of the HT and LT ToD rates from
+      # tariffs.yaml).  No separate rate parameter is required.
+      penalty_hours: [8, 9, 10, 11, 19, 20, 21, 22]  # hours in which penalty is applied (1-indexed)
+      # Hours (1-indexed, 1 = midnight–1 am, 24 = 11 pm–midnight) in which the
+      # RE penetration floor is enforced and penalty is charged.
+      # Empty list → all 8760 hours are subject to the penalty (default).
+      # Example — evening peak only: [19, 20, 21, 22]
+      # Example — both peaks:        [8, 9, 10, 11, 19, 20, 21, 22]
 
 
   # ─────────────────────────────────────────────────────────────────────

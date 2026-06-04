@@ -13,9 +13,37 @@ These tests are marked ``slow`` so they can be excluded from fast CI:
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
+from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.energy.year1_engine import Year1Engine
+from hybrid_plant.finance.finance_engine import FinanceEngine
 from hybrid_plant.solver.solver_engine import SolverEngine, SolverResult
+
+
+def _config_no_penalty(config: FullConfig) -> FullConfig:
+    """Return a copy of config with hourly_re_penetration_penalty disabled."""
+    solver = copy.deepcopy(config.solver)
+    pen    = solver["solver"].get("constraints", {}).get("hourly_re_penetration_penalty")
+    if pen is not None:
+        pen["enabled"] = False
+    return FullConfig(
+        project=config.project, regulatory=config.regulatory,
+        tariffs=config.tariffs, bess=config.bess,
+        finance=config.finance, solver=solver,
+    )
+
+
+@pytest.fixture(scope="module")
+def energy_engine(config, data):
+    return Year1Engine(_config_no_penalty(config), data)
+
+
+@pytest.fixture(scope="module")
+def finance_engine(config, data):
+    return FinanceEngine(_config_no_penalty(config), data)
 
 
 @pytest.fixture(scope="module")
@@ -23,7 +51,7 @@ def solver_result(config, data, energy_engine, finance_engine):
     # 200 trials is enough for TPE to find feasible regions reliably in this
     # 6-dim search space. 50 trials was too few — TPE's early exploration can
     # fail to land in positive-NPV territory with fixed seed=42.
-    solver = SolverEngine(config, data, energy_engine, finance_engine)
+    solver = SolverEngine(_config_no_penalty(config), data, energy_engine, finance_engine)
     return solver.run(n_trials=200, show_progress=False)
 
 

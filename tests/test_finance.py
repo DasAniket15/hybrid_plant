@@ -15,16 +15,49 @@ Covers
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pytest
 
+from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.capex_model import CapexModel
-from hybrid_plant.finance.opex_model import OpexModel
+from hybrid_plant.finance.finance_engine import FinanceEngine
 from hybrid_plant.finance.lcoe_model import LCOEModel
+from hybrid_plant.finance.opex_model import OpexModel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared Year-1 result (session-scoped via fixture dependency)
+# Module-scoped engine fixtures with penalty constraint disabled.
+# These shadow the session-scoped fixtures from conftest.py so that finance
+# pipeline tests remain independent of solver constraint configuration.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _config_no_penalty(config: FullConfig) -> FullConfig:
+    solver = copy.deepcopy(config.solver)
+    pen    = solver["solver"].get("constraints", {}).get("hourly_re_penetration_penalty")
+    if pen is not None:
+        pen["enabled"] = False
+    return FullConfig(
+        project=config.project, regulatory=config.regulatory,
+        tariffs=config.tariffs, bess=config.bess,
+        finance=config.finance, solver=solver,
+    )
+
+
+@pytest.fixture(scope="module")
+def energy_engine(config, data):
+    return Year1Engine(_config_no_penalty(config), data)
+
+
+@pytest.fixture(scope="module")
+def finance_engine(config, data):
+    return FinanceEngine(_config_no_penalty(config), data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared Year-1 result
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
