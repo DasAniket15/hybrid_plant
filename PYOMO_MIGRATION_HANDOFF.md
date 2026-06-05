@@ -39,15 +39,21 @@ Hard rules (from the task brief):
 ## 2. Commit state (git log on feature/pyomo-migration)
 
 ```
+<doc>   RESUME_PROMPT.md + this handoff update (docs only)
+5f73bea Add model summary; update BESS config and load   (USER commit: RTC + MODEL_SUMMARY + load)
+d2f8d1c WIP Step 5: Full 25-year horizon mode (slow-test validation PENDING)
 c580a4d Step 4: Unfix sizing -> first true optimisation + Layer 3 validation
 303646b Reformulate aux from financial cost to energy-level netting (D8 update)
 dae844b Step 3: savings_npv objective + report.py + Layer 2 finance parity
 fa53c2b Step 2: Single-year LP with fixed sizing + Layer 1 physics validation
 82fdc74 Step 1: Scaffold optimise package and implement params.py
-5bfed12 (Step 4's parent — pre-existing main work)
 ```
 
-**Step 5 is IMPLEMENTED but NOT yet committed** and its **slow tests were never
+**The branch is on `origin/feature/pyomo-migration`** (pushed; local == origin
+at 5f73bea before the docs commit). The home PC can `git pull` from origin —
+but the docs commit on top is LOCAL until pushed (see end of this section).
+
+**Step 5 is IMPLEMENTED (WIP commit d2f8d1c) but its slow tests were never
 successfully run to completion** (killed mid-solve twice — see §7). A WIP commit
 of the Step 5 code may have been made at handoff (check `git log`); if so it is
 clearly labelled WIP and the slow-test validation is still PENDING.
@@ -240,7 +246,7 @@ so the **year-to-year SOC carryover (§3.4) is automatic** — no special-casing
 
 `git status --short` at handoff showed:
 ```
- M configs/bess.yaml                              <-- NOT mine; see below
+ M configs/bess.yaml                              <-- intentional RTC switch; committed at handoff
  M data/load_profile_8760.csv                     <-- pre-existing, NOT mine
  M graphify-out/GRAPH_REPORT.md                   <-- pre-existing, NOT mine
  M src/hybrid_plant/optimise/build.py             <-- Step 5
@@ -257,18 +263,17 @@ so the **year-to-year SOC carryover (§3.4) is automatic** — no special-casing
 ?? PYOMO_MIGRATION_HANDOFF.md                     <-- this file
 ```
 
-### ⚠️ `configs/bess.yaml` anomaly
-It changed `discharge_hours: [18,19,20,21,22,23] → []` and
-`charge_first: true → false` (i.e. switched PlantEngine to **normal RTC**).
-**I did not edit this file** — my probes only `copy.deepcopy(config.bess)` and
-modified the copy in memory. It was unmodified at Step 1 and appeared modified
-during the session. Likely an external/manual edit or sync artifact.
+### `configs/bess.yaml` — intentional switch to RTC (KEEP, do not revert)
+Changed `discharge_hours: [18,19,20,21,22,23] → []` and
+`charge_first: true → false`, i.e. switched PlantEngine to **normal RTC**.
+**This is an intentional user edit** — the evening-only / charge-first BESS
+dispatch was deliberately disabled. Already **committed by the user in
+`5f73bea`** (with MODEL_SUMMARY.md and the load profile update).
 - It does **NOT** affect the Pyomo model (params reads only efficiency/
   container/aux from bess.yaml, not the dispatch block).
 - It **does** change the default config used by PlantEngine/FinanceEngine and the
-  conftest benchmark (now RTC instead of evening-window).
-- **DECIDE before committing:** revert it (`git checkout configs/bess.yaml`) to
-  restore evening-window, or keep RTC intentionally. It was left **unstaged**.
+  conftest benchmark (now RTC instead of evening-window) — which is the desired
+  behaviour. Do **not** `git checkout` it back.
 
 ---
 
@@ -285,8 +290,8 @@ during the session. Likely an external/manual edit or sync artifact.
    ```
    Expect: params (83) + dispatch single (Part A) + finance (Layer2A/B/D) +
    full_horizon fast (14) all green. ~30-60 s.
-4. **Decide the bess.yaml question** (§7) before running oracle-based tests, since
-   the oracle tests `deepcopy` to RTC anyway but conftest benchmark uses the file.
+4. **bess.yaml is intentionally RTC** (§7) — keep it; no decision needed. Oracle
+   tests `deepcopy` to RTC anyway; the conftest benchmark now also uses RTC.
 5. **Run the slow full-horizon validation ONCE** (will take ~25–40 min; keep the
    machine awake — see §11). Recommend enabling solver streaming first by
    temporarily passing `tee=True`, or just run blind:
