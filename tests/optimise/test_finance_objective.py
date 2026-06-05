@@ -176,9 +176,10 @@ def _pyomo_cost_components(
 
     npv_wheeling_tax = (params.wheel + params.tax) * 1000.0 * disc_meter_mwh
 
-    # Aux cost (D8) — grid-fed, constant per container
-    aux_annual_rate = params.aux_pc * float(np.sum(params.tod)) * 1000.0
-    npv_aux = nb * aux_annual_rate * params.A_N
+    # Aux — energy-level netting: deducted at lf x net_tod rate (no wheeling/tax, no loss on aux itself)
+    net_tod_arr = params.tod - (params.wheel + params.tax)
+    aux_net_rate = params.lf * params.aux_pc * float(np.sum(net_tod_arr)) * 1000.0
+    npv_aux = nb * aux_net_rate * params.A_N
 
     return {
         "total_capex":      total_capex,
@@ -363,29 +364,34 @@ class TestLayer2BSavingsNpv:
         disc_meter_mwh = params.lf * (solar_1 * params.D_s + wind_1 * params.D_w + bess_1 * params.D_b)
         rev_net = net_flat * 1000.0 * disc_meter_mwh
 
-        # Cost side — financing, opex, cap  (aux is intentionally EXCLUDED here
-        # to match FinanceEngine which also does not include aux)
+        # Cost side — financing, opex, cap
         cc = _pyomo_cost_components(solar_1, wind_1, bess_1, S, W, P, nb, params)
         cost_total = cc["npv_financing"] + cc["npv_opex"] + cc["npv_cap"]
 
-        pyomo_savings_flat = rev_net - cost_total
-        npv_aux            = cc["npv_aux"]
+        # Aux constant in new objective: lf x nb x aux_pc x sum_h(net_tod_flat) x 1000 x A_N
+        # With flat_tod: net_tod_flat = (flat_tod - wheel - tax) for all 8760 hours.
+        npv_aux_new = params.lf * nb * params.aux_pc * 8760.0 * net_flat * 1000.0 * params.A_N
+
+        pyomo_savings_flat = rev_net - cost_total - npv_aux_new
         finance_savings    = finance_result_fast["savings_npv"]
 
-        # ── Finding A assertion ──────────────────────────────────────────────
-        err = _rel_err(pyomo_savings_flat, finance_savings)
+        # ── Finding A assertion (new aux formulation) ────────────────────────
+        # Pyomo_flat + NPV(aux_new) = FinanceEngine savings_npv  (+-0.1%)
+        # FinanceEngine has no aux; Pyomo deducts lf x net_tod x aux.
+        adjusted = pyomo_savings_flat + npv_aux_new
+        err = _rel_err(adjusted, finance_savings)
 
         print(
-            f"\n[Layer2B] savings_npv (Finding A):"
+            f"\n[Layer2B] savings_npv (Finding A, energy-level aux):"
             f"  Pyomo_flat={pyomo_savings_flat/1e7:.4f} Cr"
+            f"  NPV(aux_new)={npv_aux_new/1e7:.4f} Cr"
+            f"  adjusted={adjusted/1e7:.4f} Cr"
             f"  FinanceEngine={finance_savings/1e7:.4f} Cr"
-            f"  NPV(aux) [extra Pyomo cost]={npv_aux/1e7:.4f} Cr"
-            f"  pyomo_obj_value = Pyomo_flat - aux = {(pyomo_savings_flat-npv_aux)/1e7:.4f} Cr"
             f"  rel_err={err:.2e}"
         )
         assert err < 1e-3, (
-            f"Finding A violated: Pyomo_flat ≠ FinanceEngine savings_npv\n"
-            f"  Pyomo_flat={pyomo_savings_flat:.2f}  finance={finance_savings:.2f}  rel_err={err:.2e}"
+            f"Finding A violated: Pyomo_flat + npv_aux_new != FinanceEngine savings_npv\n"
+            f"  adjusted={adjusted:.2f}  finance={finance_savings:.2f}  rel_err={err:.2e}"
         )
 
     def test_npv_aux_is_positive(
@@ -393,8 +399,9 @@ class TestLayer2BSavingsNpv:
     ) -> None:
         """NPV(aux) is a cost (positive), reducing savings."""
         nb = _FIXED["nb"]
-        aux_annual_rate = params.aux_pc * float(np.sum(params.tod)) * 1000.0
-        npv_aux = nb * aux_annual_rate * params.A_N
+        net_tod = params.tod - (params.wheel + params.tax)
+        aux_net_rate = params.lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
+        npv_aux = nb * aux_net_rate * params.A_N
         assert npv_aux > 0
 
     def test_hourly_tod_objective_geq_flat_tod(
@@ -466,25 +473,28 @@ class TestLayer2CLP:
         lp_savings_result: dict
     ) -> None:
         """
-        Pyomo savings_npv (ToD-aware) ≥ FinanceEngine savings_npv (flat tariff)
-        minus NPV(aux).  The LP extracts extra value by dispatching into peaks.
+        Pyomo savings_npv (ToD-aware, energy-level aux) should be close to
+        FinanceEngine savings_npv (flat-tariff, no aux).
 
-        Here we check a lower bound: LP savings_npv ≥ FinanceEngine_savings - aux - 10%
-        margin (for dispatch differences vs PlantEngine heuristic).
+        The LP uses the correct aux model (lf x net_tod rate, 80 Cr NPV) while
+        FinanceEngine has no aux at all (176 Cr).  The gap should be small after
+        accounting for the aux difference and ToD-optimisation gain.
+
+        Lower bound: LP savings_npv >= FinanceEngine_savings - aux_new - 10% margin.
         """
-        lp_npv = lp_savings_result["status"]["obj_val"]
+        lp_npv  = lp_savings_result["status"]["obj_val"]
         fin_npv = finance_result_fast["savings_npv"]
 
-        cc  = _pyomo_cost_components(0.0, 0.0, 0.0, _FIXED["S"], _FIXED["W"],
-                                     _FIXED["P"], _FIXED["nb"], params)
-        npv_aux = cc["npv_aux"]
-        lower_bound = (fin_npv - npv_aux) * 0.90   # allow 10% margin
+        cc      = _pyomo_cost_components(0.0, 0.0, 0.0, _FIXED["S"], _FIXED["W"],
+                                         _FIXED["P"], _FIXED["nb"], params)
+        npv_aux = cc["npv_aux"]   # now uses new lf x net_tod rate
+        lower_bound = (fin_npv - npv_aux) * 0.90
 
         print(
-            f"\n[Layer2C] savings_npv:"
+            f"\n[Layer2C] savings_npv (energy-level aux):"
             f"  LP={lp_npv/1e7:.4f} Cr"
             f"  FinanceEngine={fin_npv/1e7:.4f} Cr"
-            f"  NPV(aux)={npv_aux/1e7:.4f} Cr"
+            f"  NPV(aux_new)={npv_aux/1e7:.4f} Cr"
             f"  lower_bound={lower_bound/1e7:.4f} Cr"
         )
         assert lp_npv >= lower_bound, (
@@ -498,9 +508,12 @@ class TestLayer2CLP:
         """All dispatch constraints must hold in the savings_npv LP solution."""
         d     = lp_savings_result["dispatch"]
         E_b   = _FIXED["nb"] * params.cs
+        nb    = float(_FIXED["nb"])
 
-        # C3
-        lhs   = params.lf * (d["sd"] + d["wd"] + params.eta_d * d["dis"]) + d["ddraw"]
+        # C3 (new form with aux): lf*(sd+wd+eta_d*dis - nb*aux_pc) + ddraw = load
+        lhs = (params.lf * (d["sd"] + d["wd"] + params.eta_d * d["dis"]
+                            - nb * params.aux_pc)
+               + d["ddraw"])
         assert float(np.abs(lhs - params.load).max()) < 1e-3
 
         # C8

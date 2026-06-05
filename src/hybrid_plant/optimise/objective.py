@@ -124,10 +124,15 @@ def add_savings_npv_objective(
     # ── NPV(capacity charges) ─────────────────────────────────────────────────
     npv_cap = params.cap_rate * model.P * 12.0 * params.A_N
 
-    # ── NPV(aux cost) — grid-fed per container (D8) ───────────────────────────
-    # Annual aux cost per container = aux_pc [MWh/h] × Σ_h tod[h] × 1000 [kWh/MWh]
-    aux_annual_rate = params.aux_pc * float(np.sum(params.tod)) * 1000.0
-    npv_aux = model.nb * aux_annual_rate * params.A_N
+    # ── NPV(aux impact) — energy-level netting (D8) ──────────────────────────
+    # Aux is consumed at the plant busbar; it reduces net RE meter delivery by
+    # lf × aux_pc per container per hour.  No wheeling/tax on aux (it is never
+    # transported); grid loss does not apply to the aux energy itself.
+    # Rate per container per year = lf × aux_pc × Σ_h net_tod[h] × 1000
+    # (net_tod already excludes wheel+tax — the loss is priced at the
+    # delivered-RE rate, not the full DISCOM tariff).
+    aux_net_rate = params.lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
+    npv_aux = model.nb * aux_net_rate * params.A_N
 
     # ── Objective ─────────────────────────────────────────────────────────────
     model.obj = pyo.Objective(

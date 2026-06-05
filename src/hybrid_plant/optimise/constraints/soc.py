@@ -12,13 +12,14 @@ SOC convention
 soc[h] is the state of charge at the END of hour h (after charge/discharge
 in that hour).  For h = 0 the implicit prior state is 0 (C7).
 
-Aux treatment (D8)
-──────────────────
-Auxiliary consumption is NOT in the SOC balance; it is modelled as a
-grid-fed cost term in the objective.  This keeps C6 LP-feasible at
-commissioning-zero start — there is no "owe aux at empty SOC" infeasibility.
-The resulting divergence from PlantEngine's DC-drain aux is quantified in the
-Layer-1 validation test (< 0.5% on annual energy, attributed to D8).
+Aux treatment (D8 — energy-level)
+──────────────────────────────────
+Auxiliary consumption is NOT in the SOC balance.  Instead it is netted off
+at the energy level in C3 (balance.py): aux reduces the net busbar exported
+through the grid, so the client's effective DISCOM draw increases by
+lf × n_b × aux_pc per hour.  This keeps C6 LP-feasible at commissioning-zero
+and avoids any min(aux, SOC) non-linearity.  The resulting divergence from
+PlantEngine's DC-drain aux is quantified in the Layer-1 validation test.
 
 Full-mode (§3.5)
 ────────────────

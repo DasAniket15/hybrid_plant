@@ -165,16 +165,55 @@ class TestLayer1Algebraic:
         )
 
     def test_c3_load_balance(self, params: OptParams, plant_year1: dict) -> None:
-        """C3: lf*(sd + wd + eta_d*dis) + ddraw = load"""
-        sd   = plant_year1["solar_direct_pre"]
-        wd   = plant_year1["wind_direct_pre"]
-        dis_raw = plant_year1["discharge_pre"] / params.eta_d   # Pyomo dis
-        ddraw   = plant_year1["shortfall"]                       # meter shortfall
+        """
+        Verify the underlying energy balance.
 
-        lhs = params.lf * (sd + wd + params.eta_d * dis_raw) + ddraw
-        rhs = params.load
-        max_err = float(np.abs(lhs - rhs).max())
-        assert max_err < 1e-6, f"C3 max residual = {max_err:.2e} MWh"
+        PlantEngine enforces:
+            lf × (sd + wd + η_d·dis) + ddraw = load          [original C3]
+
+        The Pyomo model enforces:
+            lf × (sd + wd + η_d·dis − n_b·aux_pc) + ddraw = load   [new C3]
+
+        These differ by a constant lf × n_b × aux_pc per hour.  The test
+        checks PlantEngine's own balance (original C3), which must hold to
+        machine precision.  The additional aux term in Pyomo's C3 means that
+        if we imposed PlantEngine dispatch on Pyomo's constraint, ddraw would
+        be larger by exactly lf × n_b × aux_pc — this is expected and correct
+        (the client draws more DISCOM to cover the aux-equivalent energy).
+        """
+        sd      = plant_year1["solar_direct_pre"]
+        wd      = plant_year1["wind_direct_pre"]
+        dis_raw = plant_year1["discharge_pre"] / params.eta_d
+        ddraw   = plant_year1["shortfall"]
+
+        # PlantEngine's own balance: lf*(sd+wd+eta_d*dis) + ddraw = load
+        lhs_plant = params.lf * (sd + wd + params.eta_d * dis_raw) + ddraw
+        max_err = float(np.abs(lhs_plant - params.load).max())
+        assert max_err < 1e-6, f"PlantEngine energy balance residual = {max_err:.2e} MWh"
+
+    def test_c3_pyomo_ddraw_vs_plant(self, params: OptParams, plant_year1: dict) -> None:
+        """
+        If PlantEngine dispatch is imposed on Pyomo's new C3, ddraw increases
+        by exactly lf × n_b × aux_pc per hour (aux is charged to DISCOM).
+        """
+        sd      = plant_year1["solar_direct_pre"]
+        wd      = plant_year1["wind_direct_pre"]
+        dis_raw = plant_year1["discharge_pre"] / params.eta_d
+        E_b     = _FIXED["nb"] * params.cs
+
+        lf, eta_d, aux_pc = params.lf, params.eta_d, params.aux_pc
+        nb = _FIXED["nb"]
+
+        # Pyomo ddraw implied by new C3 = load - lf*(busbar - nb*aux_pc)
+        busbar = sd + wd + eta_d * dis_raw
+        ddraw_pyomo = params.load - lf * (busbar - nb * aux_pc)
+        ddraw_plant = plant_year1["shortfall"]
+
+        expected_delta = lf * nb * aux_pc
+        actual_delta   = float(np.mean(ddraw_pyomo - ddraw_plant))
+        assert abs(actual_delta - expected_delta) < 1e-6, (
+            f"Mean ddraw delta: expected {expected_delta:.4f}, got {actual_delta:.4f}"
+        )
 
     def test_c5_ppa_cap(self, params: OptParams, plant_year1: dict) -> None:
         """C5: sd + wd + eta_d*dis ≤ P"""
@@ -348,11 +387,13 @@ class TestLayer1LP:
 
     @pytest.mark.slow
     def test_lp_c3_load_balance(self, params: OptParams, lp_result: dict) -> None:
-        """C3 must hold in the LP solution."""
-        d    = lp_result["dispatch"]
-        lhs  = params.lf * (d["sd"] + d["wd"] + params.eta_d * d["dis"]) + d["ddraw"]
-        rhs  = params.load
-        max_err = float(np.abs(lhs - rhs).max())
+        """New C3 must hold in the LP solution: lf*(sd+wd+eta_d*dis-nb*aux)+ddraw=load."""
+        d   = lp_result["dispatch"]
+        nb  = float(_FIXED["nb"])
+        lhs = (params.lf * (d["sd"] + d["wd"] + params.eta_d * d["dis"]
+                            - nb * params.aux_pc)
+               + d["ddraw"])
+        max_err = float(np.abs(lhs - params.load).max())
         assert max_err < 1e-4, f"C3 max residual in LP solution = {max_err:.2e}"
 
     @pytest.mark.slow
