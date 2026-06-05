@@ -37,5 +37,5 @@ bess:
     # Example -- 6-hour evening window with charge-first:
     #   discharge_hours: [18, 19, 20, 21, 22, 23]
     #   charge_first: true
-    discharge_hours: [18, 19, 20, 21, 22, 23]       # empty = normal RTC (no restriction)
-    charge_first: true
+    discharge_hours: []       # empty = normal RTC (no restriction)
+    charge_first: false

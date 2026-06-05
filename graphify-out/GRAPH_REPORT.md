@@ -1,64 +1,57 @@
-# Graph Report - .  (2026-04-21)
+# Graph Report - C:\Users\Aniket4.Das\OneDrive - Reliance Corporate IT Park Limited\Documents\Models\Excel Solutioning - GitHub\hybrid_plant  (2026-06-04)
 
 ## Corpus Check
-- Corpus is ~14,937 words - fits in a single context window. You may not need a graph.
+- 27 files · ~51,789 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 274 nodes · 499 edges · 26 communities detected
-- Extraction: 55% EXTRACTED · 45% INFERRED · 0% AMBIGUOUS · INFERRED: 225 edges (avg confidence: 0.57)
-- Token cost: 9,800 input · 2,100 output
+- 300 nodes · 598 edges · 18 communities detected
+- Extraction: 46% EXTRACTED · 54% INFERRED · 0% AMBIGUOUS · INFERRED: 321 edges (avg confidence: 0.56)
+- Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
-- [[_COMMUNITY_CAPEX Model|CAPEX Model]]
-- [[_COMMUNITY_Config & Dataclasses|Config & Dataclasses]]
-- [[_COMMUNITY_Energy Simulation Core|Energy Simulation Core]]
-- [[_COMMUNITY_Solver & Entry Point|Solver & Entry Point]]
-- [[_COMMUNITY_Grid & Meter Layer|Grid & Meter Layer]]
-- [[_COMMUNITY_LCOE Financial Model|LCOE Financial Model]]
-- [[_COMMUNITY_Energy Projection|Energy Projection]]
-- [[_COMMUNITY_Financial Utilities|Financial Utilities]]
-- [[_COMMUNITY_Solver Validation|Solver Validation]]
-- [[_COMMUNITY_Data Loading|Data Loading]]
-- [[_COMMUNITY_Config Loading|Config Loading]]
-- [[_COMMUNITY_Unit Constants|Unit Constants]]
-- [[_COMMUNITY_BESS Dispatch Control|BESS Dispatch Control]]
-- [[_COMMUNITY_Projection Modes|Projection Modes]]
-- [[_COMMUNITY_Package Init|Package Init]]
-- [[_COMMUNITY_Finance Sub-models|Finance Sub-models]]
-- [[_COMMUNITY_Test Suite Energy|Test Suite Energy]]
-- [[_COMMUNITY_Test Suite Finance|Test Suite Finance]]
-- [[_COMMUNITY_Test Suite Solver|Test Suite Solver]]
-- [[_COMMUNITY_OPEX Model|OPEX Model]]
-- [[_COMMUNITY_Savings Model|Savings Model]]
-- [[_COMMUNITY_Landed Tariff Model|Landed Tariff Model]]
-- [[_COMMUNITY_README & Docs|README & Docs]]
-- [[_COMMUNITY_Solver Internals|Solver Internals]]
-- [[_COMMUNITY_Benchmark Params|Benchmark Params]]
-- [[_COMMUNITY_Misc Utilities|Misc Utilities]]
+- [[_COMMUNITY_Community 0|Community 0]]
+- [[_COMMUNITY_Community 1|Community 1]]
+- [[_COMMUNITY_Community 2|Community 2]]
+- [[_COMMUNITY_Community 3|Community 3]]
+- [[_COMMUNITY_Community 4|Community 4]]
+- [[_COMMUNITY_Community 5|Community 5]]
+- [[_COMMUNITY_Community 6|Community 6]]
+- [[_COMMUNITY_Community 7|Community 7]]
+- [[_COMMUNITY_Community 8|Community 8]]
+- [[_COMMUNITY_Community 9|Community 9]]
+- [[_COMMUNITY_Community 10|Community 10]]
+- [[_COMMUNITY_Community 11|Community 11]]
+- [[_COMMUNITY_Community 12|Community 12]]
+- [[_COMMUNITY_Community 13|Community 13]]
+- [[_COMMUNITY_Community 14|Community 14]]
+- [[_COMMUNITY_Community 15|Community 15]]
+- [[_COMMUNITY_Community 16|Community 16]]
+- [[_COMMUNITY_Community 17|Community 17]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `FullConfig` - 70 edges
-2. `PlantEngine` - 24 edges
-3. `FinanceEngine` - 24 edges
-4. `LCOEModel` - 23 edges
-5. `Year1Engine` - 20 edges
-6. `CapexModel` - 19 edges
-7. `SolverEngine` - 18 edges
-8. `GridInterface` - 17 edges
-9. `OpexModel` - 17 edges
-10. `EnergyProjection` - 13 edges
+1. `FullConfig` - 110 edges
+2. `PlantEngine` - 35 edges
+3. `FinanceEngine` - 34 edges
+4. `Year1Engine` - 32 edges
+5. `GridInterface` - 22 edges
+6. `LCOEModel` - 22 edges
+7. `CapexModel` - 20 edges
+8. `SolverEngine` - 19 edges
+9. `OpexModel` - 18 edges
+10. `TestFinanceEngineIntegration` - 16 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `LCOEModel` --implements--> `NPV-based LCOE Framework`  [INFERRED]
-  src\hybrid_plant\finance\lcoe_model.py → README.md
+  C:\Users\Aniket4.Das\OneDrive - Reliance Corporate IT Park Limited\Documents\Models\Excel Solutioning - GitHub\hybrid_plant\src\hybrid_plant\finance\lcoe_model.py → README.md
 - `SavingsModel` --implements--> `100% DISCOM Baseline Benchmark`  [INFERRED]
-  src\hybrid_plant\finance\savings_model.py → README.md
+  C:\Users\Aniket4.Das\OneDrive - Reliance Corporate IT Park Limited\Documents\Models\Excel Solutioning - GitHub\hybrid_plant\src\hybrid_plant\finance\savings_model.py → README.md
+- `FullConfig` --uses--> `Resolve a project-relative path string to an absolute ``Path``.`  [INFERRED]
+  src\hybrid_plant\config_loader.py → src\hybrid_plant\data_loader.py
 - `Resolve a project-relative path string to an absolute ``Path``.` --uses--> `FullConfig`  [INFERRED]
-  src\hybrid_plant\data_loader.py → src\hybrid_plant\config_loader.py
+  C:\Users\Aniket4.Das\OneDrive - Reliance Corporate IT Park Limited\Documents\Models\Excel Solutioning - GitHub\hybrid_plant\src\hybrid_plant\data_loader.py → src\hybrid_plant\config_loader.py
 - `Read the first column of a header-less CSV as a float64 array.      Parameters` --uses--> `FullConfig`  [INFERRED]
-  src\hybrid_plant\data_loader.py → src\hybrid_plant\config_loader.py
-- `Raise if *array* does not contain exactly 8760 values.` --uses--> `FullConfig`  [INFERRED]
-  src\hybrid_plant\data_loader.py → src\hybrid_plant\config_loader.py
+  C:\Users\Aniket4.Das\OneDrive - Reliance Corporate IT Park Limited\Documents\Models\Excel Solutioning - GitHub\hybrid_plant\src\hybrid_plant\data_loader.py → src\hybrid_plant\config_loader.py
 
 ## Hyperedges (group relationships)
 - **Year-1 Plant-Grid-Meter Pipeline** — plant_engine_PlantEngine, grid_interface_GridInterface, meter_layer_MeterLayer [EXTRACTED 1.00]
@@ -69,158 +62,110 @@
 
 ## Communities
 
-### Community 0 - "CAPEX Model"
-Cohesion: 0.07
-Nodes (16): CapexModel, capex_model.py ────────────── Computes project CAPEX broken down by component., Calculates total project CAPEX and a per-component breakdown.      Parameters, Parameters         ----------         solar_capacity_mw        : AC solar inst, OpexModel, opex_model.py ───────────── Projects annual OPEX across the full project lifet, Computes a 25-year annual OPEX projection with per-component detail.      Para, Parameters         ----------         solar_capacity_mw : AC solar installed c (+8 more)
+### Community 0 - "Community 0"
+Cohesion: 0.06
+Nodes (35): _load_curve(), energy_projection.py ──────────────────── Projects annual energy delivery acro, Load a degradation CSV into a {year: value} dict., Return annual energy totals across the 25-year project lifetime.          Para, Load a degradation CSV into a {year: value} dict., Fast path: scale Year-1 scalar totals by annual degradation factors.         Ru, Full path: re-simulate each of the 25 project years with that year's         de, Runs a per-year full plant simulation to produce an accurate 25-year     energy (+27 more)
 
-### Community 1 - "Config & Dataclasses"
-Cohesion: 0.08
-Nodes (29): FullConfig, Immutable bundle of all project configuration namespaces., config(), data(), finance_engine(), conftest.py ─────────── Shared pytest fixtures for the hybrid_plant test suite, Fully loaded and validated FullConfig (loaded once per session)., Time-series + degradation curve data dict (loaded once per session). (+21 more)
-
-### Community 2 - "Energy Simulation Core"
-Cohesion: 0.1
-Nodes (23): energy_engine(), Shared Year1Engine instance., Load a degradation CSV into a {year: value} dict., GridInterface, Blended HT/LT Loss Factor, grid_interface.py ───────────────── Computes the blended HT/LT grid loss facto, Translates plant-busbar export (pre-loss) to client-meter delivery     (post-lo, MeterLayer (+15 more)
-
-### Community 3 - "Solver & Entry Point"
+### Community 1 - "Community 1"
 Cohesion: 0.09
-Nodes (14): run_model.py ──────────── Master entry point for the hybrid RE plant model., Fast Mode (Scalar Energy Projection), solver_engine.py ──────────────── Optimisation layer — wraps Optuna TPE to sea, Map an Optuna trial to a complete parameter set., Run energy + finance engines for a given parameter set., Return True if savings_npv meets the configured minimum., Execute the optimisation study.          Parameters         ----------, Structured output of a completed optimisation run. (+6 more)
+Nodes (26): CapexModel, Calculates total project CAPEX and a per-component breakdown.      Parameters, EnergyProjection, FinanceEngine, finance_engine.py ───────────────── Top-level finance pipeline orchestrator., Orchestrates the full LCOE-based finance pipeline for a given     plant configu, Run the full finance pipeline for a given plant configuration.          Parame, Run the full finance pipeline for a given plant configuration.          Parame (+18 more)
 
-### Community 4 - "Grid & Meter Layer"
-Cohesion: 0.07
-Nodes (9): Scale busbar export by the loss factor to produce meter delivery.          Par, Compute hourly DISCOM shortfall.          Parameters         ----------, test_energy.py ────────────── Unit and integration tests for the energy simula, result(), TestGridInterface, TestMeterLayer, TestPlantEngineSolarOnly, TestYear1EngineSolarOnly (+1 more)
+### Community 2 - "Community 2"
+Cohesion: 0.08
+Nodes (22): energy_engine(), Shared Year1Engine instance., First year where cumulative savings turns positive., solver_engine.py ──────────────── Optimisation layer — wraps Optuna TPE to sea, Map an Optuna trial to a complete parameter set., Run energy + finance engines for a given parameter set., Return True if all configured constraints are satisfied., Execute the optimisation study.          Parameters         ---------- (+14 more)
 
-### Community 5 - "LCOE Financial Model"
-Cohesion: 0.13
-Nodes (10): LCOEModel, lcoe_model.py ───────────── NPV-based Levelised Cost of Energy (LCOE)., Parameters         ----------         total_capex                   : Total pr, Computes the project LCOE and supporting financial schedules.      WACC is com, WACC = (D/V × Rd × (1 − Tc)) + (E/V × Re), Excel-style NPV: series[0] is Year 1, discounted at t = 1.              NPV =, Fixed-EMI amortising loan schedule.          Returns two lists of length ``pro, WACC Computation (+2 more)
+### Community 3 - "Community 3"
+Cohesion: 0.05
+Nodes (31): capex_model.py ────────────── Computes project CAPEX broken down by component., Parameters         ----------         solar_capacity_mw        : AC solar inst, FullConfig, Immutable bundle of all project configuration namespaces., Read the first column of a header-less CSV as a float64 array.      Parameters, Raise if *array* does not contain exactly 8760 values., Load all time-series profiles and degradation curves defined in     ``project.y, landed_tariff_model.py ────────────────────── Computes the annual landed tarif (+23 more)
 
-### Community 6 - "Energy Projection"
+### Community 4 - "Community 4"
+Cohesion: 0.08
+Nodes (8): Scale busbar export by the loss factor to produce meter delivery.          Par, Compute hourly DISCOM shortfall.          Parameters         ----------, test_energy.py ────────────── Unit and integration tests for the energy simula, TestGridInterface, TestMeterLayer, TestPlantEngineSolarOnly, TestYear1EngineSolarOnly, TestYear1EngineSolarWind
+
+### Community 5 - "Community 5"
+Cohesion: 0.09
+Nodes (10): CUF formula: busbar_mwh / (capacity_mw × 8760) × 100      Plant CUF uses PPA c, Solar CUF for an Indian site should be in [15%, 35%]., Plant CUF derived from simulation busbar totals stays in [20%, 80%]., TestCUF, _config_no_penalty(), energy_engine(), finance(), finance_engine() (+2 more)
+
+### Community 6 - "Community 6"
+Cohesion: 0.12
+Nodes (14): load_config(), _load_yaml(), config_loader.py ──────────────── Loads all YAML configuration files and bundl, Load a single YAML file and return its contents as a dict., Run lightweight sanity checks on a freshly loaded config.      Raises     ---, Discover the project root, load all YAML configs, validate, and return     a ``, _validate(), config() (+6 more)
+
+### Community 7 - "Community 7"
 Cohesion: 0.14
-Nodes (11): EnergyProjection, _load_curve(), energy_projection.py ──────────────────── Projects annual energy delivery acro, Return annual energy totals across the 25-year project lifetime.          Para, Fast path: scale Year-1 scalar totals by annual degradation factors.         Ru, Full path: re-simulate each of the 25 project years with that year's         de, Runs a per-year full plant simulation to produce an accurate 25-year     energy, Run the full finance pipeline for a given plant configuration.          Parame (+3 more)
+Nodes (14): _load_csv_column(), load_timeseries_data(), operating_value(), data_loader.py ────────────── Loads all time-series CSVs (8760-hour profiles), Load all time-series profiles and degradation curves defined in     ``project.y, Resolve a project-relative path string to an absolute ``Path``., Resolve a project-relative path string to an absolute ``Path``., Read the first column of a header-less CSV as a float64 array.      Parameters (+6 more)
 
-### Community 7 - "Financial Utilities"
-Cohesion: 0.31
-Nodes (12): compute_cuf(), compute_payback_year(), cr(), pct(), print_section1(), print_section2(), print_section3(), print_section4() (+4 more)
+### Community 8 - "Community 8"
+Cohesion: 0.25
+Nodes (14): compute_cuf(), compute_payback_year(), cr(), pct(), print_section1(), print_section2(), print_section3(), print_section4() (+6 more)
 
-### Community 8 - "Solver Validation"
-Cohesion: 0.35
-Nodes (9): cr(), validate_solver.py ────────────────── Full 4-layer solver validation script., run_engines(), sep(), _sweep(), validate_benchmark(), validate_convergence(), validate_physical() (+1 more)
+### Community 9 - "Community 9"
+Cohesion: 0.25
+Nodes (5): Parameters         ----------         total_capex                   : Total pr, Fixed-EMI amortising loan schedule.          Returns two lists of length ``pro, npv(), finance/_utils.py ───────────────── Shared financial utility functions used ac, Excel-style NPV: series[0] is Year 1, discounted at t = 1.          NPV = Σ se
 
-### Community 9 - "Data Loading"
-Cohesion: 0.27
-Nodes (9): _load_csv_column(), load_timeseries_data(), data_loader.py ────────────── Loads all time-series CSVs (8760-hour profiles), Resolve a project-relative path string to an absolute ``Path``., Read the first column of a header-less CSV as a float64 array.      Parameters, Raise if *array* does not contain exactly 8760 values., Load all time-series profiles and degradation curves defined in     ``project.y, _resolve() (+1 more)
+### Community 10 - "Community 10"
+Cohesion: 0.5
+Nodes (3): _period_weighted_avg(), savings_model.py ──────────────── Computes client electricity cost savings ver, _weighted_discom_tariff()
 
-### Community 10 - "Config Loading"
-Cohesion: 0.32
-Nodes (7): load_config(), _load_yaml(), config_loader.py ──────────────── Loads all YAML configuration files and bundl, Load a single YAML file and return its contents as a dict., Run lightweight sanity checks on a freshly loaded config.      Raises     ---, Discover the project root, load all YAML configs, validate, and return     a ``, _validate()
-
-### Community 11 - "Unit Constants"
+### Community 11 - "Community 11"
 Cohesion: 1.0
 Nodes (1): constants.py ──────────── Shared physical and financial unit-conversion consta
 
-### Community 12 - "BESS Dispatch Control"
-Cohesion: 1.0
-Nodes (2): BESS Dispatch Mask, ToD-Aware BESS Dispatch Logic
-
-### Community 13 - "Projection Modes"
-Cohesion: 1.0
-Nodes (2): Fast Scalar Projection Mode, Full Per-Year Resimulation Mode
-
-### Community 14 - "Package Init"
+### Community 12 - "Community 12"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 15 - "Finance Sub-models"
+### Community 13 - "Community 13"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 16 - "Test Suite Energy"
+### Community 14 - "Community 14"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 17 - "Test Suite Finance"
+### Community 15 - "Community 15"
 Cohesion: 1.0
 Nodes (0): 
 
-### Community 18 - "Test Suite Solver"
+### Community 16 - "Community 16"
 Cohesion: 1.0
-Nodes (1): SOC Reservation State Variables
+Nodes (1): WACC = (D/V × Rd × (1 − Tc)) + (E/V × Re)
 
-### Community 19 - "OPEX Model"
-Cohesion: 1.0
-Nodes (1): NPV Helper (Excel-style)
-
-### Community 20 - "Savings Model"
-Cohesion: 1.0
-Nodes (1): Debt Amortisation Schedule
-
-### Community 21 - "Landed Tariff Model"
-Cohesion: 1.0
-Nodes (1): OPEX Escalation Logic
-
-### Community 22 - "README & Docs"
-Cohesion: 1.0
-Nodes (1): Optuna TPE Sampler
-
-### Community 23 - "Solver Internals"
+### Community 17 - "Community 17"
 Cohesion: 1.0
 Nodes (1): Hybrid Plant README
 
-### Community 24 - "Benchmark Params"
-Cohesion: 1.0
-Nodes (1): BENCHMARK Params (validate_solver)
-
-### Community 25 - "Misc Utilities"
-Cohesion: 1.0
-Nodes (1): Unit Conversion Constants
-
 ## Knowledge Gaps
-- **34 isolated node(s):** `config_loader.py ──────────────── Loads all YAML configuration files and bundl`, `Load a single YAML file and return its contents as a dict.`, `Immutable bundle of all project configuration namespaces.`, `Run lightweight sanity checks on a freshly loaded config.      Raises     ---`, `Discover the project root, load all YAML configs, validate, and return     a ``` (+29 more)
+- **45 isolated node(s):** `config_loader.py ──────────────── Loads all YAML configuration files and bundl`, `Load a single YAML file and return its contents as a dict.`, `Immutable bundle of all project configuration namespaces.`, `Run lightweight sanity checks on a freshly loaded config.      Raises     ---`, `Discover the project root, load all YAML configs, validate, and return     a ``` (+40 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Unit Constants`** (2 nodes): `constants.py ──────────── Shared physical and financial unit-conversion consta`, `constants.py`
+- **Thin community `Community 11`** (2 nodes): `constants.py`, `constants.py ──────────── Shared physical and financial unit-conversion consta`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `BESS Dispatch Control`** (2 nodes): `BESS Dispatch Mask`, `ToD-Aware BESS Dispatch Logic`
+- **Thin community `Community 12`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Projection Modes`** (2 nodes): `Fast Scalar Projection Mode`, `Full Per-Year Resimulation Mode`
+- **Thin community `Community 13`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Package Init`** (1 nodes): `__init__.py`
+- **Thin community `Community 14`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Finance Sub-models`** (1 nodes): `__init__.py`
+- **Thin community `Community 15`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Test Suite Energy`** (1 nodes): `__init__.py`
+- **Thin community `Community 16`** (1 nodes): `WACC = (D/V × Rd × (1 − Tc)) + (E/V × Re)`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Test Suite Finance`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Test Suite Solver`** (1 nodes): `SOC Reservation State Variables`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `OPEX Model`** (1 nodes): `NPV Helper (Excel-style)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Savings Model`** (1 nodes): `Debt Amortisation Schedule`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Landed Tariff Model`** (1 nodes): `OPEX Escalation Logic`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `README & Docs`** (1 nodes): `Optuna TPE Sampler`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Solver Internals`** (1 nodes): `Hybrid Plant README`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Benchmark Params`** (1 nodes): `BENCHMARK Params (validate_solver)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Misc Utilities`** (1 nodes): `Unit Conversion Constants`
+- **Thin community `Community 17`** (1 nodes): `Hybrid Plant README`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `FullConfig` connect `Config & Dataclasses` to `CAPEX Model`, `Energy Simulation Core`, `Solver & Entry Point`, `Grid & Meter Layer`, `LCOE Financial Model`, `Energy Projection`, `Data Loading`, `Config Loading`?**
-  _High betweenness centrality (0.441) - this node is a cross-community bridge._
-- **Why does `FinanceEngine` connect `Config & Dataclasses` to `CAPEX Model`, `Energy Simulation Core`, `Solver & Entry Point`, `LCOE Financial Model`, `Energy Projection`, `Solver Validation`?**
-  _High betweenness centrality (0.127) - this node is a cross-community bridge._
-- **Why does `result()` connect `Grid & Meter Layer` to `Energy Simulation Core`, `Energy Projection`?**
-  _High betweenness centrality (0.110) - this node is a cross-community bridge._
-- **Are the 67 inferred relationships involving `FullConfig` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `Resolve a project-relative path string to an absolute ``Path``.`) actually correct?**
-  _`FullConfig` has 67 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 20 inferred relationships involving `PlantEngine` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `run_model.py ──────────── Master entry point for the hybrid RE plant model.`) actually correct?**
-  _`PlantEngine` has 20 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 19 inferred relationships involving `FinanceEngine` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `run_model.py ──────────── Master entry point for the hybrid RE plant model.`) actually correct?**
-  _`FinanceEngine` has 19 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 15 inferred relationships involving `LCOEModel` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `FinanceEngine`) actually correct?**
-  _`LCOEModel` has 15 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `FullConfig` connect `Community 3` to `Community 0`, `Community 1`, `Community 2`, `Community 4`, `Community 5`, `Community 6`, `Community 7`, `Community 9`, `Community 10`?**
+  _High betweenness centrality (0.531) - this node is a cross-community bridge._
+- **Why does `FinanceEngine` connect `Community 1` to `Community 0`, `Community 2`, `Community 3`, `Community 5`, `Community 6`, `Community 8`?**
+  _High betweenness centrality (0.135) - this node is a cross-community bridge._
+- **Why does `result()` connect `Community 0` to `Community 4`, `Community 5`?**
+  _High betweenness centrality (0.105) - this node is a cross-community bridge._
+- **Are the 107 inferred relationships involving `FullConfig` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `Resolve a project-relative path string to an absolute ``Path``.`) actually correct?**
+  _`FullConfig` has 107 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 31 inferred relationships involving `PlantEngine` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `run_model.py ──────────── Master entry point for the hybrid RE plant model.`) actually correct?**
+  _`PlantEngine` has 31 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 30 inferred relationships involving `FinanceEngine` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `run_model.py ──────────── Master entry point for the hybrid RE plant model.`) actually correct?**
+  _`FinanceEngine` has 30 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 27 inferred relationships involving `Year1Engine` (e.g. with `smoke_test.py ───────────── Self-contained smoke test using only stdlib + nump` and `run_model.py ──────────── Master entry point for the hybrid RE plant model.`) actually correct?**
+  _`Year1Engine` has 27 INFERRED edges - model-reasoned connections that need verification._
