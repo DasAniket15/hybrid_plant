@@ -1,0 +1,20 @@
+{
+  "n_trials": 1500,
+  "seed": 42,
+  "runtime_s": 144.0,
+  "best_savings_npv_cr": -11158.3688,
+  "best_year1_savings_cr": -1272.4302,
+  "best_lcoe": 30.739,
+  "best_landed_tariff_y1": 37.7739,
+  "n_feasible": 0,
+  "best_params": {
+    "solar_capacity_mw": 374.54011884736246,
+    "wind_capacity_mw": 950.7143064099162,
+    "ppa_capacity_mw": 731.9939418114051,
+    "bess_containers": 599,
+    "charge_c_rate": 0.15601864044243652,
+    "discharge_c_rate": 0.15599452033620265,
+    "dispatch_priority": "solar_first",
+    "bess_charge_source": "solar_only"
+  }
+}
