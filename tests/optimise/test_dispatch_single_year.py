@@ -101,7 +101,7 @@ def lp_result(opt_cfg: OptModelConfig, params: OptParams) -> dict:
     Build + solve the single-year LP once; return (model, dispatch, status).
     Module-scoped so the solve runs once across all Part B tests (~5–15 s).
     """
-    model = build_single_year_model(opt_cfg, params, fixed_sizing=_FIXED)
+    model = build_single_year_model(opt_cfg, params, fixed_sizing=_FIXED, objective="maximize_re")
     status = solve(model, opt_cfg, tee=False)
     dispatch = extract_dispatch(model, n_hours=8760)
     return {"model": model, "dispatch": dispatch, "status": status}
