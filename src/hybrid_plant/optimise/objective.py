@@ -141,6 +141,77 @@ def add_savings_npv_objective(
     )
 
 
+def add_savings_npv_objective_full(
+    model:  pyo.ConcreteModel,
+    params: OptParams,
+    tc:     "object",
+) -> None:
+    """
+    Full 25-year savings_npv objective (design §2.4 full-mode double sum).
+
+    Revenue is summed explicitly over the 25 × 8760 horizon; per-year
+    degradation enters through the capacity bounds (C1′/C2′/C8′–C10′, see the
+    constraint modules), NOT through D_s/D_w/D_b.  Each timestep is discounted
+    by df[year(t)] (carried in ``tc.disc``).
+
+        revenue = Σ_t disc[t]·lf·1000·net_tod[hour(t)]·(sd[t] + wd[t] + η_d·dis[t])
+
+    The cost side (financing, opex, capacity, aux) is identical to the
+    single-year objective — it depends only on sizing and the precomputed
+    annuity factors.  Aux is undegraded, so it discounts at A_N.
+
+    Parameters
+    ----------
+    model  : ConcreteModel with sets, variables, E_b expression attached
+    params : OptParams
+    tc     : TimeContext (supplies hour_of and disc per timestep)
+    """
+    if hasattr(model, "obj"):
+        model.del_component(model.obj)
+
+    lf    = params.lf
+    eta_d = params.eta_d
+    net_tod = params.tod - (params.wheel + params.tax)   # (8760,)
+
+    # Per-timestep revenue coefficient: disc[t] · lf · 1000 · net_tod[hour(t)]
+    base_coef = tc.disc * lf * 1000.0 * net_tod[tc.hour_of]   # (n_steps,)
+
+    rev = pyo.quicksum(
+        float(base_coef[t]) * (model.sd[t] + model.wd[t] + eta_d * model.dis[t])
+        for t in model.H
+    )
+
+    # ── Cost side (identical to single-year objective) ───────────────────────
+    total_capex = (
+        model.S   * params.ac_dc * params.solar_rate
+        + model.W   * params.wind_rate
+        + model.E_b * params.bess_rate
+        + params.trans_fixed
+    )
+    npv_financing = total_capex * params.phi
+
+    solar_dc = model.S * params.ac_dc
+    npv_opex = (
+        solar_dc  * (params.solar_om_rate * params.G_solar_om
+                     + params.solar_trans_om_rate * params.A_N)
+        + model.W   * (params.wind_om_rate * params.G_wind_om
+                       + params.wind_trans_om_rate * params.A_N)
+        + model.E_b * params.bess_om_rate * params.A_N
+        + params.land_lease_monthly * 12.0 * params.G_land
+        + total_capex * params.insurance_pct * params.A_N
+    )
+    npv_cap = params.cap_rate * model.P * 12.0 * params.A_N
+
+    # Aux (energy-level, undegraded → discounts at A_N)
+    aux_net_rate = lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
+    npv_aux = model.nb * aux_net_rate * params.A_N
+
+    model.obj = pyo.Objective(
+        sense=pyo.maximize,
+        expr=rev - npv_financing - npv_opex - npv_cap - npv_aux,
+    )
+
+
 def add_maximize_re_delivery_objective(
     model:  pyo.ConcreteModel,
     params: OptParams,
