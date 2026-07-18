@@ -96,9 +96,20 @@ class OptionalConstraintsConfig:
       minimum_bess_discharge Σ η_d·dis ≥ min_annual_mwh · n_years  (busbar MWh)
       re_penetration         min% ≤ Σ(load − ddraw) / Σ load ·100 ≤ max%
 
+    Step-6b additions (Required + easy Nice):
+      peak_supply            Σ_{peak}(load−ddraw) ≥ min% · Σ_{peak} load
+      peak_bess_discharge    Σ_{peak} η_d·dis ≥ min_annual_mwh · n_years
+      poi_capacity           sd+wd+η_d·dis ≤ poi_mw           (per hour)
+      sanctioned_demand      ddraw ≤ demand_mw                (per hour)
+      min_grid_drawal        Σ ddraw ≥ min_annual_mwh · n_years
+      energy_purchase_cap    Σ(load−ddraw) ≤ max_annual_mwh · n_years
+      land_area              S·acre_s + W·acre_w ≤ available_acres
+
     Report-only viability gate (NOT a hard LP row — checked post-solve so an
     LP row is never coupled to the horizon-scaled objective expression):
       minimum_savings_npv    savings_npv ≥ min_value
+
+    ``*_hours`` tuples are 0-indexed (converted from the 1-indexed YAML).
     """
 
     plant_cuf_enabled:             bool  = False
@@ -113,6 +124,27 @@ class OptionalConstraintsConfig:
     re_penetration_max_pct:        float = 100.0
     min_savings_npv_enabled:       bool  = True
     min_savings_npv_value:         float = 0.0
+
+    # ── Step 6b: Required ─────────────────────────────────────────────────────
+    peak_supply_enabled:           bool  = False
+    peak_supply_min_pct:           float = 0.0
+    peak_supply_hours:             tuple = ()      # 0-indexed hours-of-day
+    peak_discharge_enabled:        bool  = False
+    peak_discharge_annual_mwh:     float = 0.0
+    peak_discharge_hours:          tuple = ()      # 0-indexed hours-of-day
+    poi_enabled:                   bool  = False
+    poi_mw:                        float = 0.0
+    sanctioned_demand_enabled:     bool  = False
+    sanctioned_demand_mw:          float = 0.0
+    # ── Step 6b: easy Nice-to-have ────────────────────────────────────────────
+    min_grid_drawal_enabled:       bool  = False
+    min_grid_drawal_annual_mwh:    float = 0.0
+    energy_purchase_cap_enabled:   bool  = False
+    energy_purchase_cap_annual_mwh: float = 0.0
+    land_area_enabled:             bool  = False
+    land_available_acres:          float = 0.0
+    land_solar_acre_per_mw:        float = 0.0
+    land_wind_acre_per_mw:         float = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -413,6 +445,17 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
     mbd   = _con("minimum_bess_discharge")
     repen = _con("re_penetration")
     msav  = _con("minimum_savings_npv")
+    psup  = _con("peak_supply_obligation")
+    pdis  = _con("peak_bess_discharge")
+    poi   = _con("poi_capacity")
+    sdem  = _con("sanctioned_demand")
+    mgd   = _con("min_grid_drawal")
+    epc   = _con("energy_purchase_cap")
+    land  = _con("land_area")
+
+    def _hours0(cfg: dict) -> tuple:
+        """1-indexed hours-of-day from YAML → 0-indexed tuple."""
+        return tuple(int(h) - 1 for h in cfg.get("peak_hours", []))
 
     opt_constraints = OptionalConstraintsConfig(
         plant_cuf_enabled=bool(pcuf.get("enabled", False)),
@@ -427,6 +470,26 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         re_penetration_max_pct=float(repen.get("max_percent", 100.0)),
         min_savings_npv_enabled=bool(msav.get("enabled", True)),
         min_savings_npv_value=float(msav.get("min_value", 0.0)),
+        # Step 6b — Required
+        peak_supply_enabled=bool(psup.get("enabled", False)),
+        peak_supply_min_pct=float(psup.get("min_percent", 0.0)),
+        peak_supply_hours=_hours0(psup),
+        peak_discharge_enabled=bool(pdis.get("enabled", False)),
+        peak_discharge_annual_mwh=float(pdis.get("min_annual_mwh", 0.0)),
+        peak_discharge_hours=_hours0(pdis),
+        poi_enabled=bool(poi.get("enabled", False)),
+        poi_mw=float(poi.get("poi_mw", 0.0)),
+        sanctioned_demand_enabled=bool(sdem.get("enabled", False)),
+        sanctioned_demand_mw=float(sdem.get("demand_mw", 0.0)),
+        # Step 6b — easy Nice-to-have
+        min_grid_drawal_enabled=bool(mgd.get("enabled", False)),
+        min_grid_drawal_annual_mwh=float(mgd.get("min_annual_mwh", 0.0)),
+        energy_purchase_cap_enabled=bool(epc.get("enabled", False)),
+        energy_purchase_cap_annual_mwh=float(epc.get("max_annual_mwh", 0.0)),
+        land_area_enabled=bool(land.get("enabled", False)),
+        land_available_acres=float(land.get("available_acres", 0.0)),
+        land_solar_acre_per_mw=float(land.get("solar_acre_per_mw", 0.0)),
+        land_wind_acre_per_mw=float(land.get("wind_acre_per_mw", 0.0)),
     )
 
     hrep = cons.get("hourly_re_penetration_penalty", {}) or {}

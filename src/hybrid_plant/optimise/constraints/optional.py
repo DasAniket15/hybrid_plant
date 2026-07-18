@@ -23,6 +23,24 @@ minimum_bess_discharge Σ η_d·dis ≥ min_annual_mwh · n_years   (busbar MWh)
 re_penetration         min% ≤ Σ(load − ddraw) / Σ load · 100 ≤ max%
                        meter RE delivery = load[hour] − ddraw  (from C3).
 
+Step 6b — Required (real India PPA / grid clauses):
+peak_supply_obligation Σ_{peak}(load − ddraw) ≥ min% · Σ_{peak} load
+                       RTC / FDRE guaranteed supply in defined peak blocks.
+peak_bess_discharge    Σ_{peak} η_d·dis ≥ min_annual_mwh · n_years
+                       Firm BESS dispatch commitment in peak hours.
+poi_capacity           sd[t] + wd[t] + η_d·dis[t] ≤ poi_mw   (per hour)
+                       Physical CTU/STU connection limit, distinct from PPA cap.
+sanctioned_demand      ddraw[t] ≤ demand_mw   (per hour)
+                       Client's sanctioned grid connection ceiling.
+
+Step 6b — easy Nice-to-have:
+min_grid_drawal        Σ ddraw ≥ min_annual_mwh · n_years
+                       Contractual minimum grid offtake (CSS / demand charge).
+energy_purchase_cap    Σ(load − ddraw) ≤ max_annual_mwh · n_years
+                       Buyer-side annual energy (MU) spend ceiling.
+land_area              S·acre_s + W·acre_w ≤ available_acres
+                       Finite site area (~4–5 acre/MW solar, ~0.5 acre/MW wind).
+
 Not added here
 ──────────────
 minimum_savings_npv  — report-only viability gate (handoff §9).  Enforcing it
@@ -106,3 +124,63 @@ def add_optional_constraints(
             model.opt_re_penetration_max = pyo.Constraint(
                 expr=meter <= (cfg.re_penetration_max_pct / 100.0) * total_load
             )
+
+    # hour-of-day for peak-window matching (hour_of is hour-of-year 0…8759)
+    hod = tc.hour_of % 24
+
+    # ── peak_supply_obligation (RTC / FDRE) ───────────────────────────────────
+    # RE meter delivery must cover ≥ min% of load within the peak hour set.
+    if cfg.peak_supply_enabled and cfg.peak_supply_hours and cfg.peak_supply_min_pct > 0.0:
+        peak_idx   = np.nonzero(np.isin(hod, np.asarray(cfg.peak_supply_hours)))[0]
+        load_peak  = float(np.sum(params.load[tc.hour_of[peak_idx]]))
+        meter_peak = load_peak - pyo.quicksum(model.ddraw[int(t)] for t in peak_idx)
+        model.opt_peak_supply_min = pyo.Constraint(
+            expr=meter_peak >= (cfg.peak_supply_min_pct / 100.0) * load_peak
+        )
+
+    # ── peak_bess_discharge (firm dispatch commitment) ────────────────────────
+    if cfg.peak_discharge_enabled and cfg.peak_discharge_hours and cfg.peak_discharge_annual_mwh > 0.0:
+        peak_idx  = np.nonzero(np.isin(hod, np.asarray(cfg.peak_discharge_hours)))[0]
+        discharge = pyo.quicksum(eta_d * model.dis[int(t)] for t in peak_idx)
+        model.opt_peak_discharge = pyo.Constraint(
+            expr=discharge >= cfg.peak_discharge_annual_mwh * n_years
+        )
+
+    # ── poi_capacity (physical grid connection cap) ───────────────────────────
+    if cfg.poi_enabled and cfg.poi_mw > 0.0:
+        poi_mw = cfg.poi_mw
+
+        @model.Constraint(model.H)
+        def opt_poi_cap(m, t: int) -> pyo.ConstraintData:
+            return m.sd[t] + m.wd[t] + eta_d * m.dis[t] <= poi_mw
+
+    # ── sanctioned_demand (client grid ceiling) ───────────────────────────────
+    if cfg.sanctioned_demand_enabled and cfg.sanctioned_demand_mw > 0.0:
+        demand_mw = cfg.sanctioned_demand_mw
+
+        @model.Constraint(model.H)
+        def opt_sanctioned_demand(m, t: int) -> pyo.ConstraintData:
+            return m.ddraw[t] <= demand_mw
+
+    # ── min_grid_drawal (contractual minimum offtake) ─────────────────────────
+    if cfg.min_grid_drawal_enabled and cfg.min_grid_drawal_annual_mwh > 0.0:
+        model.opt_min_grid_drawal = pyo.Constraint(
+            expr=pyo.quicksum(model.ddraw[t] for t in model.H)
+            >= cfg.min_grid_drawal_annual_mwh * n_years
+        )
+
+    # ── energy_purchase_cap (buyer annual MU ceiling) ─────────────────────────
+    if cfg.energy_purchase_cap_enabled and cfg.energy_purchase_cap_annual_mwh > 0.0:
+        total_load = float(np.sum(params.load[tc.hour_of]))
+        meter      = total_load - pyo.quicksum(model.ddraw[t] for t in model.H)
+        model.opt_energy_purchase_cap = pyo.Constraint(
+            expr=meter <= cfg.energy_purchase_cap_annual_mwh * n_years
+        )
+
+    # ── land_area (finite site) ───────────────────────────────────────────────
+    if cfg.land_area_enabled and cfg.land_available_acres > 0.0:
+        model.opt_land_area = pyo.Constraint(
+            expr=model.S * cfg.land_solar_acre_per_mw
+            + model.W * cfg.land_wind_acre_per_mw
+            <= cfg.land_available_acres
+        )

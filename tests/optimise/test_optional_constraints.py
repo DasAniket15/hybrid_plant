@@ -130,11 +130,13 @@ def baseline(params: OptParams) -> dict:
     d = extract_dispatch(m, n_hours=tc.n_steps)
     total_load = float(np.sum(params.load[tc.hour_of]))
     return {
+        "dispatch":   d,
         "busbar":     _busbar(d, params.eta_d),
         "discharge":  _discharge(d, params.eta_d),
         "meter":      _meter(d, params, tc),
         "total_load": total_load,
         "n_steps":    tc.n_steps,
+        "hod":        tc.hour_of % 24,
     }
 
 
@@ -146,7 +148,13 @@ _OPT_COMPONENTS = [
     "opt_plant_cuf_min", "opt_plant_cuf_max",
     "opt_min_bess_capacity", "opt_min_bess_discharge",
     "opt_re_penetration_min", "opt_re_penetration_max",
+    # Step 6b
+    "opt_peak_supply_min", "opt_peak_discharge",
+    "opt_poi_cap", "opt_sanctioned_demand",
+    "opt_min_grid_drawal", "opt_energy_purchase_cap", "opt_land_area",
 ]
+
+PEAK = (18, 19, 20, 21)   # 0-indexed hours-of-day (= 1-indexed 19..22)
 
 
 class TestStructural:
@@ -304,3 +312,171 @@ class TestRePenetration:
         m, _ = _build(params, cfg, _FIXED)
         st = _solve(m)
         assert "optimal" not in st["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. peak_supply_obligation (P5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _peak_meter(d: dict, params: OptParams, tc: TimeContext, peak: tuple) -> tuple[float, float]:
+    """(meter delivery, load) summed over the peak hour-of-day window."""
+    hod  = tc.hour_of % 24
+    mask = np.isin(hod, np.asarray(peak))
+    load_peak  = float(np.sum(params.load[tc.hour_of[mask]]))
+    meter_peak = load_peak - float(np.sum(d["ddraw"][mask]))
+    return meter_peak, load_peak
+
+
+class TestPeakSupply:
+
+    def test_low_floor_satisfied(self, params: OptParams, baseline: dict) -> None:
+        m0, tc = _build(params, OptionalConstraintsConfig(), _FIXED)  # tc only
+        mtr0, load_pk = _peak_meter(baseline["dispatch"], params, tc, PEAK)
+        floor_pct = 0.5 * (mtr0 / load_pk * 100.0)
+        cfg = OptionalConstraintsConfig(
+            peak_supply_enabled=True, peak_supply_min_pct=floor_pct, peak_supply_hours=PEAK
+        )
+        m, tc2 = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc2.n_steps)
+        mtr, load_pk2 = _peak_meter(d, params, tc2, PEAK)
+        assert mtr >= (floor_pct / 100.0) * load_pk2 - 1e-3
+
+    def test_impossible_floor_infeasible(self, params: OptParams) -> None:
+        # Tiny plant (no BESS, little wind) cannot cover ~all evening-peak load.
+        tiny = {"S": 5.0, "W": 5.0, "P": 100.0, "nb": 0}
+        cfg = OptionalConstraintsConfig(
+            peak_supply_enabled=True, peak_supply_min_pct=99.9, peak_supply_hours=PEAK
+        )
+        m, _ = _build(params, cfg, tiny)
+        assert "optimal" not in _solve(m)["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. peak_bess_discharge (P8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPeakDischarge:
+
+    def _peak_discharge(self, d: dict, params: OptParams, tc: TimeContext) -> float:
+        hod  = tc.hour_of % 24
+        mask = np.isin(hod, np.asarray(PEAK))
+        return float(np.sum(params.eta_d * d["dis"][mask]))
+
+    def test_low_floor_satisfied(self, params: OptParams, baseline: dict) -> None:
+        _, tc = _build(params, OptionalConstraintsConfig(), _FIXED)
+        base_pk = self._peak_discharge(baseline["dispatch"], params, tc)
+        floor = 0.5 * base_pk
+        cfg = OptionalConstraintsConfig(
+            peak_discharge_enabled=True,
+            peak_discharge_annual_mwh=floor, peak_discharge_hours=PEAK,
+        )
+        m, tc2 = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc2.n_steps)
+        assert self._peak_discharge(d, params, tc2) >= floor - 1e-4
+
+    def test_impossible_floor_infeasible(self, params: OptParams, baseline: dict) -> None:
+        floor = 100.0 * max(baseline["discharge"], 1.0)
+        cfg = OptionalConstraintsConfig(
+            peak_discharge_enabled=True,
+            peak_discharge_annual_mwh=floor, peak_discharge_hours=PEAK,
+        )
+        m, _ = _build(params, cfg, _FIXED)
+        assert "optimal" not in _solve(m)["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. poi_capacity (T1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPoiCapacity:
+
+    def test_caps_hourly_injection(self, params: OptParams) -> None:
+        poi = 60.0   # below the P=100 PPA cap → binds
+        cfg = OptionalConstraintsConfig(poi_enabled=True, poi_mw=poi)
+        m, tc = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc.n_steps)
+        inj = d["sd"] + d["wd"] + params.eta_d * d["dis"]
+        assert float(np.max(inj)) <= poi + 1e-4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. sanctioned_demand (T3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSanctionedDemand:
+
+    def test_caps_hourly_ddraw(self, params: OptParams) -> None:
+        cap = float(np.max(params.load[:N_HRS])) + 1.0   # always coverable → feasible
+        cfg = OptionalConstraintsConfig(sanctioned_demand_enabled=True, sanctioned_demand_mw=cap)
+        m, tc = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc.n_steps)
+        assert float(np.max(d["ddraw"])) <= cap + 1e-4
+
+    def test_tiny_cap_infeasible(self, params: OptParams) -> None:
+        cfg = OptionalConstraintsConfig(sanctioned_demand_enabled=True, sanctioned_demand_mw=1e-3)
+        m, _ = _build(params, cfg, _FIXED)
+        assert "optimal" not in _solve(m)["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. min_grid_drawal (P6) & energy_purchase_cap (P7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGridDrawalAndPurchaseCap:
+
+    def test_min_grid_drawal_forces_up(self, params: OptParams, baseline: dict) -> None:
+        base_draw = baseline["total_load"] - baseline["meter"]
+        floor = base_draw + 0.2 * baseline["total_load"]   # force MORE grid draw
+        cfg = OptionalConstraintsConfig(
+            min_grid_drawal_enabled=True, min_grid_drawal_annual_mwh=floor
+        )
+        m, tc = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc.n_steps)
+        assert float(np.sum(d["ddraw"])) >= floor - 1e-3
+
+    def test_energy_purchase_cap_limits_meter(self, params: OptParams, baseline: dict) -> None:
+        cap = 0.8 * baseline["meter"]
+        cfg = OptionalConstraintsConfig(
+            energy_purchase_cap_enabled=True, energy_purchase_cap_annual_mwh=cap
+        )
+        m, tc = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        d = extract_dispatch(m, n_hours=tc.n_steps)
+        assert _meter(d, params, tc) <= cap + 1e-3
+        assert _meter(d, params, tc) < baseline["meter"] - 1e-3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. land_area (T6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLandArea:
+
+    def test_feasible_when_area_sufficient(self, params: OptParams) -> None:
+        # used = 150*4 + 80*0.5 = 640 acres
+        cfg = OptionalConstraintsConfig(
+            land_area_enabled=True, land_available_acres=700.0,
+            land_solar_acre_per_mw=4.0, land_wind_acre_per_mw=0.5,
+        )
+        m, _ = _build(params, cfg, _FIXED)
+        assert hasattr(m, "opt_land_area")
+        assert "optimal" in _solve(m)["status"].lower()
+
+    def test_infeasible_when_area_short(self, params: OptParams) -> None:
+        cfg = OptionalConstraintsConfig(
+            land_area_enabled=True, land_available_acres=500.0,   # < 640 used
+            land_solar_acre_per_mw=4.0, land_wind_acre_per_mw=0.5,
+        )
+        m, _ = _build(params, cfg, _FIXED)
+        assert "optimal" not in _solve(m)["status"].lower()
