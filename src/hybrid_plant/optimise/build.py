@@ -33,6 +33,7 @@ import pyomo.environ as pyo
 from hybrid_plant.optimise.config import OptModelConfig
 from hybrid_plant.optimise.constraints.allocation import add_allocation_constraints
 from hybrid_plant.optimise.constraints.balance import add_balance_constraints
+from hybrid_plant.optimise.constraints.optional import add_optional_constraints
 from hybrid_plant.optimise.constraints.ppa import add_ppa_constraint
 from hybrid_plant.optimise.constraints.soc import add_soc_constraints
 from hybrid_plant.optimise.objective import (
@@ -93,7 +94,7 @@ def build_single_year_model(
     Build the single-year LP / MILP (8760 h).  Degradation enters the objective
     via D_s/D_w/D_b; capacity bounds use fresh (Year-1) capacity.
     """
-    m, _tc = _assemble_common("hybrid_plant_single_year", "single", params, fixed_sizing)
+    m, tc = _assemble_common("hybrid_plant_single_year", "single", params, fixed_sizing)
 
     if objective == "savings_npv":
         add_savings_npv_objective(m, params)
@@ -101,6 +102,8 @@ def build_single_year_model(
         add_maximize_re_delivery_objective(m, params)
     else:
         raise ValueError(f"Unknown objective: {objective!r}. Use 'savings_npv' or 'maximize_re'.")
+
+    add_optional_constraints(m, params, tc)   # §3.6 PPA toggles (no-op if all off)
 
     return m
 
@@ -124,5 +127,7 @@ def build_full_model(
         add_maximize_re_delivery_objective(m, params)
     else:
         raise ValueError(f"Unknown objective: {objective!r}. Use 'savings_npv' or 'maximize_re'.")
+
+    add_optional_constraints(m, params, tc)   # §3.6 PPA toggles (no-op if all off)
 
     return m

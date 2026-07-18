@@ -27,10 +27,19 @@ def _solve_once(
     Un-scales obj_val by ``model._obj_scale`` if set (full-mode objective
     stores 1e-7 there so HiGHS sees a well-conditioned range; single-year
     models leave the attribute absent, defaulting to 1.0).
+
+    An infeasible model (e.g. an over-tight optional PPA constraint) is
+    reported as ``status="infeasible"`` rather than raising — the appsi_highs
+    interface otherwise throws when it cannot load a solution.
     """
     import math
 
-    results = solver.solve(model, tee=tee)
+    try:
+        results = solver.solve(model, tee=tee)
+    except RuntimeError as exc:
+        if "feasible solution was not found" in str(exc).lower():
+            return {"status": "infeasible", "obj_val": math.nan, "wall_sec": math.nan}
+        raise
     status  = str(results.solver.termination_condition)
 
     obj_scale = getattr(model, "_obj_scale", 1.0)

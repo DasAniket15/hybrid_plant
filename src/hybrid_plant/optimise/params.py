@@ -79,6 +79,43 @@ def _g_esc(df_arr: np.ndarray, esc: float) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Optional-constraint configuration (§3.6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class OptionalConstraintsConfig:
+    """
+    Toggleable PPA-contract constraints, read from ``solver.yaml`` →
+    ``solver.constraints``.  All percents are on a 0–100 scale (as written in
+    the YAML).  Every toggle defaults to a no-op so the base model is unchanged
+    when the block is absent or all constraints are disabled.
+
+    Hard LP constraints (enforced in ``constraints/optional.py``):
+      plant_cuf              min% ≤ Σ busbar_export / (P·n_steps)·100 ≤ max%
+      minimum_bess_capacity  E_b (= nb·cs, Year-1 SOH) ≥ min_mwh
+      minimum_bess_discharge Σ η_d·dis ≥ min_annual_mwh · n_years  (busbar MWh)
+      re_penetration         min% ≤ Σ(load − ddraw) / Σ load ·100 ≤ max%
+
+    Report-only viability gate (NOT a hard LP row — checked post-solve so an
+    LP row is never coupled to the horizon-scaled objective expression):
+      minimum_savings_npv    savings_npv ≥ min_value
+    """
+
+    plant_cuf_enabled:             bool  = False
+    plant_cuf_min_pct:             float = 0.0
+    plant_cuf_max_pct:             float = 100.0
+    min_bess_capacity_enabled:     bool  = False
+    min_bess_capacity_mwh:         float = 0.0
+    min_bess_discharge_enabled:    bool  = False
+    min_bess_discharge_annual_mwh: float = 0.0
+    re_penetration_enabled:        bool  = False
+    re_penetration_min_pct:        float = 0.0
+    re_penetration_max_pct:        float = 100.0
+    min_savings_npv_enabled:       bool  = True
+    min_savings_npv_value:         float = 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OptParams dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -182,6 +219,9 @@ class OptParams:
     D_b: float   # Σ_t df[t]·d_b[t]
 
     # ── Optional-constraint parameters (§3.6) ─────────────────────────────────
+    # Hard toggleable PPA-contract constraints (constraints/optional.py)
+    opt_constraints: OptionalConstraintsConfig
+
     # RE penetration penalty (hourly mask + config values)
     re_pen_penalty_enabled: bool
     re_pen_min_pct:         float   # floor (decimal, e.g. 0.50)
@@ -363,11 +403,33 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
     D_b = float(np.dot(df_arr, d_b))
 
     # ── Optional-constraint parameters ────────────────────────────────────────
-    hrep = (
-        config.solver["solver"]
-        .get("constraints", {})
-        .get("hourly_re_penetration_penalty", {})
+    cons = config.solver["solver"].get("constraints", {})
+
+    def _con(name: str) -> dict:
+        return cons.get(name, {}) or {}
+
+    pcuf  = _con("plant_cuf")
+    mbc   = _con("minimum_bess_capacity")
+    mbd   = _con("minimum_bess_discharge")
+    repen = _con("re_penetration")
+    msav  = _con("minimum_savings_npv")
+
+    opt_constraints = OptionalConstraintsConfig(
+        plant_cuf_enabled=bool(pcuf.get("enabled", False)),
+        plant_cuf_min_pct=float(pcuf.get("min_percent", 0.0)),
+        plant_cuf_max_pct=float(pcuf.get("max_percent", 100.0)),
+        min_bess_capacity_enabled=bool(mbc.get("enabled", False)),
+        min_bess_capacity_mwh=float(mbc.get("min_mwh", 0.0)),
+        min_bess_discharge_enabled=bool(mbd.get("enabled", False)),
+        min_bess_discharge_annual_mwh=float(mbd.get("min_annual_mwh", 0.0)),
+        re_penetration_enabled=bool(repen.get("enabled", False)),
+        re_penetration_min_pct=float(repen.get("min_percent", 0.0)),
+        re_penetration_max_pct=float(repen.get("max_percent", 100.0)),
+        min_savings_npv_enabled=bool(msav.get("enabled", True)),
+        min_savings_npv_value=float(msav.get("min_value", 0.0)),
     )
+
+    hrep = cons.get("hourly_re_penetration_penalty", {}) or {}
     re_pen_penalty_enabled = bool(hrep.get("enabled", False))
     re_pen_min_pct         = float(hrep.get("min_percent", 0.0)) * PERCENT_TO_DECIMAL
     # Convert 1-indexed penalty_hours (YAML) to 0-indexed
@@ -447,6 +509,7 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         D_w=D_w,
         D_b=D_b,
         # Optional constraints
+        opt_constraints=opt_constraints,
         re_pen_penalty_enabled=re_pen_penalty_enabled,
         re_pen_min_pct=re_pen_min_pct,
         re_pen_penalty_hours=re_pen_penalty_hours,
