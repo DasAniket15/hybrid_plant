@@ -122,7 +122,7 @@ def build_full_model(
     m, tc = _assemble_common("hybrid_plant_full_horizon", "full", params, fixed_sizing)
 
     if objective == "savings_npv":
-        add_savings_npv_objective_full(m, params, tc)
+        add_savings_npv_objective_full(m, params, tc, scale=opt_cfg.scale_money)
     elif objective == "maximize_re":
         add_maximize_re_delivery_objective(m, params)
     else:

@@ -145,6 +145,7 @@ def add_savings_npv_objective_full(
     model:  pyo.ConcreteModel,
     params: OptParams,
     tc:     "object",
+    scale:  float = 1e-7,
 ) -> None:
     """
     Full 25-year savings_npv objective (design §2.4 full-mode double sum).
@@ -160,22 +161,24 @@ def add_savings_npv_objective_full(
     single-year objective — it depends only on sizing and the precomputed
     annuity factors.  Aux is undegraded, so it discounts at A_N.
 
-    All coefficients are premultiplied by _S = 1e-7 (INR → scaled units) so
-    HiGHS sees a well-conditioned objective range.  model._obj_scale is set so
-    solve.py can recover original INR values without knowing the horizon mode.
+    All coefficients are premultiplied by ``scale`` (INR → scaled units, default
+    1e-7 = OptModelConfig.scale_money) so HiGHS sees a well-conditioned objective
+    range.  ``model._obj_scale`` is set so solve.py / verify.py can recover
+    original INR values without knowing the horizon mode.
 
     Parameters
     ----------
     model  : ConcreteModel with sets, variables, E_b expression attached
     params : OptParams
     tc     : TimeContext (supplies hour_of and disc per timestep)
+    scale  : objective scale factor (OptModelConfig.scale_money); build.py wires
+             it from opt_cfg.  1e-7 keeps coefficients in [~1e-3, ~1e2] instead
+             of [5e2, 9e7].
     """
     if hasattr(model, "obj"):
         model.del_component(model.obj)
 
-    # Scale factor: keeps objective coefficients in [~1e-3, ~1e2] instead of
-    # [5e2, 9e7].  Matches OptModelConfig.scale_money (Step 7 will wire it).
-    _S = 1e-7
+    _S = float(scale)
     # Bypass Pyomo's Block.__setattr__ (which traverses all ~3M components on
     # the full model to validate/register the attribute — catastrophically slow).
     # object.__setattr__ sets a plain Python attribute directly on the instance.
