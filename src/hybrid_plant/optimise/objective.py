@@ -160,6 +160,10 @@ def add_savings_npv_objective_full(
     single-year objective — it depends only on sizing and the precomputed
     annuity factors.  Aux is undegraded, so it discounts at A_N.
 
+    All coefficients are premultiplied by _S = 1e-7 (INR → scaled units) so
+    HiGHS sees a well-conditioned objective range.  model._obj_scale is set so
+    solve.py can recover original INR values without knowing the horizon mode.
+
     Parameters
     ----------
     model  : ConcreteModel with sets, variables, E_b expression attached
@@ -169,42 +173,51 @@ def add_savings_npv_objective_full(
     if hasattr(model, "obj"):
         model.del_component(model.obj)
 
+    # Scale factor: keeps objective coefficients in [~1e-3, ~1e2] instead of
+    # [5e2, 9e7].  Matches OptModelConfig.scale_money (Step 7 will wire it).
+    _S = 1e-7
+    # Bypass Pyomo's Block.__setattr__ (which traverses all ~3M components on
+    # the full model to validate/register the attribute — catastrophically slow).
+    # object.__setattr__ sets a plain Python attribute directly on the instance.
+    object.__setattr__(model, "_obj_scale", _S)
+
     lf    = params.lf
     eta_d = params.eta_d
     net_tod = params.tod - (params.wheel + params.tax)   # (8760,)
 
-    # Per-timestep revenue coefficient: disc[t] · lf · 1000 · net_tod[hour(t)]
-    base_coef = tc.disc * lf * 1000.0 * net_tod[tc.hour_of]   # (n_steps,)
+    # Per-timestep revenue coefficient: _S · disc[t] · lf · 1000 · net_tod[hour(t)]
+    # Premultiplied as a numpy float array — pyo.quicksum sees flat float × LinearExpr.
+    base_coef = _S * tc.disc * lf * 1000.0 * net_tod[tc.hour_of]   # (n_steps,)
 
     rev = pyo.quicksum(
         float(base_coef[t]) * (model.sd[t] + model.wd[t] + eta_d * model.dis[t])
         for t in model.H
     )
 
-    # ── Cost side (identical to single-year objective) ───────────────────────
+    # ── Cost side: all scalar coefficients premultiplied by _S ───────────────
     total_capex = (
         model.S   * params.ac_dc * params.solar_rate
         + model.W   * params.wind_rate
         + model.E_b * params.bess_rate
         + params.trans_fixed
     )
-    npv_financing = total_capex * params.phi
+    npv_financing = total_capex * (params.phi * _S)
 
     solar_dc = model.S * params.ac_dc
     npv_opex = (
-        solar_dc  * (params.solar_om_rate * params.G_solar_om
-                     + params.solar_trans_om_rate * params.A_N)
-        + model.W   * (params.wind_om_rate * params.G_wind_om
-                       + params.wind_trans_om_rate * params.A_N)
-        + model.E_b * params.bess_om_rate * params.A_N
-        + params.land_lease_monthly * 12.0 * params.G_land
-        + total_capex * params.insurance_pct * params.A_N
+        solar_dc  * ((params.solar_om_rate * params.G_solar_om
+                      + params.solar_trans_om_rate * params.A_N) * _S)
+        + model.W   * ((params.wind_om_rate * params.G_wind_om
+                        + params.wind_trans_om_rate * params.A_N) * _S)
+        + model.E_b * (params.bess_om_rate * params.A_N * _S)
+        + params.land_lease_monthly * 12.0 * params.G_land * _S
+        + total_capex * (params.insurance_pct * params.A_N * _S)
     )
-    npv_cap = params.cap_rate * model.P * 12.0 * params.A_N
+    npv_cap = params.cap_rate * model.P * (12.0 * params.A_N * _S)
 
     # Aux (energy-level, undegraded → discounts at A_N)
     aux_net_rate = lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
-    npv_aux = model.nb * aux_net_rate * params.A_N
+    npv_aux = model.nb * (aux_net_rate * params.A_N * _S)
 
     model.obj = pyo.Objective(
         sense=pyo.maximize,

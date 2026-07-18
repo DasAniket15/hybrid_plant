@@ -16,6 +16,37 @@ import pyomo.environ as pyo
 from hybrid_plant.optimise.config import OptModelConfig
 
 
+def _solve_once(
+    solver: Any,
+    model:  pyo.ConcreteModel,
+    tee:    bool = False,
+) -> dict[str, Any]:
+    """
+    Solve *model* with an already-created solver instance.
+
+    Un-scales obj_val by ``model._obj_scale`` if set (full-mode objective
+    stores 1e-7 there so HiGHS sees a well-conditioned range; single-year
+    models leave the attribute absent, defaulting to 1.0).
+    """
+    import math
+
+    results = solver.solve(model, tee=tee)
+    status  = str(results.solver.termination_condition)
+
+    obj_scale = getattr(model, "_obj_scale", 1.0)
+    try:
+        obj_val = float(pyo.value(model.obj)) / obj_scale
+    except Exception:
+        obj_val = math.nan
+
+    try:
+        wall_sec = float(results.solver.wall_time)
+    except AttributeError:
+        wall_sec = float("nan")
+
+    return {"status": status, "obj_val": obj_val, "wall_sec": wall_sec}
+
+
 def solve(
     model:   pyo.ConcreteModel,
     opt_cfg: OptModelConfig,
@@ -34,7 +65,7 @@ def solve(
     -------
     dict
         status   : str   — ``"optimal"`` | ``"infeasible"`` | other
-        obj_val  : float — objective value (or NaN if not solved)
+        obj_val  : float — objective value in original INR units (or NaN)
         wall_sec : float — solver wall-clock time in seconds
     """
     solver_name = opt_cfg.solver_name
@@ -46,23 +77,7 @@ def solve(
     else:
         raise ValueError(f"Unsupported solver: {solver_name!r}. Use 'appsi_highs' or 'cbc'.")
 
-    results = solver.solve(model, tee=tee)
-
-    tc = results.solver.termination_condition
-    status = str(tc)
-
-    try:
-        obj_val = float(pyo.value(model.obj))
-    except Exception:
-        import math
-        obj_val = math.nan
-
-    try:
-        wall_sec = float(results.solver.wall_time)
-    except AttributeError:
-        wall_sec = float("nan")
-
-    return {"status": status, "obj_val": obj_val, "wall_sec": wall_sec}
+    return _solve_once(solver, model, tee)
 
 
 def solve_relax_and_snap(
@@ -100,6 +115,14 @@ def solve_relax_and_snap(
     """
     import math
 
+    solver_name = opt_cfg.solver_name
+    if solver_name == "appsi_highs":
+        solver = pyo.SolverFactory("appsi_highs")
+    elif solver_name == "cbc":
+        solver = pyo.SolverFactory("cbc")
+    else:
+        raise ValueError(f"Unsupported solver: {solver_name!r}. Use 'appsi_highs' or 'cbc'.")
+
     # ── Phase 1: LP relaxation (nb continuous) ───────────────────────────────
     orig_domain = model.nb.domain
     was_fixed   = model.nb.is_fixed()
@@ -107,16 +130,24 @@ def solve_relax_and_snap(
         model.nb.unfix()
     model.nb.domain = pyo.NonNegativeReals
 
-    r1 = solve(model, opt_cfg, tee=tee)
+    r1 = _solve_once(solver, model, tee=tee)
     nb_relaxed  = float(pyo.value(model.nb))
     relaxed_obj = r1["obj_val"]
 
     # ── Phase 2: snap nb to nearest integer, re-solve dispatch LP ────────────
+    # Keep nb in the CONTINUOUS domain (NonNegativeReals) — only fix its value.
+    # Changing domain (continuous→integer) triggers an O(n²) APPSI expression
+    # re-walk across all 657k constraints that reference E_b=nb*cs, hanging for
+    # hours.  A bound-only fix (lb=ub=nb_snapped) is an O(1) APPSI update and
+    # preserves the Phase-1 LP basis for a warm-started Phase-2 solve.
     nb_snapped = int(round(nb_relaxed))
-    model.nb.domain = orig_domain
     model.nb.fix(nb_snapped)
 
-    r2 = solve(model, opt_cfg, tee=tee)
+    r2 = _solve_once(solver, model, tee=tee)
+
+    # Restore domain and unfix for the caller.
+    model.nb.domain = orig_domain
+    model.nb.unfix()
 
     w1 = r1.get("wall_sec", float("nan"))
     w2 = r2.get("wall_sec", float("nan"))
