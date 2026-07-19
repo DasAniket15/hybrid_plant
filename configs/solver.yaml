@@ -35,7 +35,7 @@ solver:
       scope: current
       type: continuous
       min: 0
-      max: 1000
+      max: 0
 
     ppa_capacity_mw:
       scope: current
@@ -128,7 +128,7 @@ solver:
 
     # ── Step 6b: Required (real India PPA / grid clauses) ─────────────────
     peak_supply_obligation:
-      enabled: true
+      enabled: false
       # RTC / FDRE-style guaranteed supply in defined peak blocks:
       #   Σ_{peak}(load − ddraw) ≥ min_percent/100 · Σ_{peak} load
       min_percent: 85
@@ -142,7 +142,7 @@ solver:
       #   Σ_{peak∈month}(load − ddraw) ≥ min_percent/100 · Σ_{peak∈month} load
       # Per-interval shortfalls are settled financially in real PPAs — model
       # those with hourly_re_penetration_penalty, not a hard per-hour gate.
-      min_percent: 70
+      min_percent: 85
       peak_hours: [8, 9, 10, 11, 19, 20, 21, 22]   # 1-indexed hours-of-day
 
     peak_bess_discharge:
@@ -207,7 +207,7 @@ solver:
       # The solver naturally minimises penalty by sizing the plant to meet the
       # floor.  Unlike the hard re_penetration gate above, no trial is rejected;
       # instead the penalty flows directly through the economics.
-      min_percent: 50.0            # RE floor applied to every individual hour (%)
+      min_percent: 85.0            # RE floor applied to every individual hour (%)
       # Penalty rate = blended ToD DISCOM tariff at the hour the shortfall occurs
       # (ht_lt_split_percent-weighted blend of the HT and LT ToD rates from
       # tariffs.yaml).  No separate rate parameter is required.
