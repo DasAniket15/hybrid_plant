@@ -145,6 +145,8 @@ class OptionalConstraintsConfig:
     land_available_acres:          float = 0.0
     land_solar_acre_per_mw:        float = 0.0
     land_wind_acre_per_mw:         float = 0.0
+    # ── Strict D7 charge/discharge exclusivity (binary, makes model a MILP) ────
+    strict_cd_enabled:             bool  = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,6 +465,7 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
     mgd   = _con("min_grid_drawal")
     epc   = _con("energy_purchase_cap")
     land  = _con("land_area")
+    scd   = _con("strict_charge_discharge")
 
     def _hours0(cfg: dict) -> tuple:
         """1-indexed hours-of-day from YAML → 0-indexed tuple."""
@@ -501,6 +504,7 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         land_available_acres=float(land.get("available_acres", 0.0)),
         land_solar_acre_per_mw=float(land.get("solar_acre_per_mw", 0.0)),
         land_wind_acre_per_mw=float(land.get("wind_acre_per_mw", 0.0)),
+        strict_cd_enabled=bool(scd.get("enabled", False)),
     )
 
     hrep = cons.get("hourly_re_penetration_penalty", {}) or {}

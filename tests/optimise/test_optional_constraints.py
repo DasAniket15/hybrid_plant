@@ -152,6 +152,8 @@ _OPT_COMPONENTS = [
     "opt_peak_supply_min", "opt_peak_discharge",
     "opt_poi_cap", "opt_sanctioned_demand",
     "opt_min_grid_drawal", "opt_energy_purchase_cap", "opt_land_area",
+    # T7
+    "u_cd", "opt_strict_charge", "opt_strict_discharge",
 ]
 
 PEAK = (18, 19, 20, 21)   # 0-indexed hours-of-day (= 1-indexed 19..22)
@@ -480,3 +482,38 @@ class TestLandArea:
         )
         m, _ = _build(params, cfg, _FIXED)
         assert "optimal" not in _solve(m)["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. strict_charge_discharge (T7) — hard D7 exclusivity binary
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStrictChargeDischarge:
+
+    def test_components_present_when_enabled(self, params: OptParams) -> None:
+        cfg = OptionalConstraintsConfig(strict_cd_enabled=True)
+        m, _ = _build(params, cfg, _FIXED)
+        assert hasattr(m, "u_cd")
+        assert hasattr(m, "opt_strict_charge")
+        assert hasattr(m, "opt_strict_discharge")
+
+    def test_enforces_exclusivity_on_solve(self, params: OptParams) -> None:
+        cfg = OptionalConstraintsConfig(strict_cd_enabled=True)
+        m, tc = _build(params, cfg, _FIXED)
+        assert "optimal" in _solve(m)["status"].lower()
+        d = extract_dispatch(m, n_hours=tc.n_steps)
+        assert float(np.max(np.minimum(d["chg"], d["dis"]))) < 1e-4
+
+    def test_forced_simultaneous_infeasible_only_with_binary(self, params: OptParams) -> None:
+        t0 = 12   # midday: solar available to charge, prior hours build SOC
+        # Without the binary, forcing chg[t0] and dis[t0] both > 0 is feasible.
+        m0, _ = _build(params, OptionalConstraintsConfig(), _FIXED)
+        m0.force_chg = pyo.Constraint(expr=m0.chg[t0] >= 1.0)
+        m0.force_dis = pyo.Constraint(expr=m0.dis[t0] >= 1.0)
+        assert "optimal" in _solve(m0)["status"].lower()
+
+        # With the binary, the same pair cannot coexist → infeasible.
+        m1, _ = _build(params, OptionalConstraintsConfig(strict_cd_enabled=True), _FIXED)
+        m1.force_chg = pyo.Constraint(expr=m1.chg[t0] >= 1.0)
+        m1.force_dis = pyo.Constraint(expr=m1.dis[t0] >= 1.0)
+        assert "optimal" not in _solve(m1)["status"].lower()

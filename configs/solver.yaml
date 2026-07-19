@@ -169,6 +169,13 @@ solver:
       solar_acre_per_mw: 4.0
       wind_acre_per_mw: 0.5
 
+    strict_charge_discharge:
+      enabled: false
+      # Hard D7 exclusivity via a per-hour binary (u=1 charge, u=0 discharge).
+      # Efficiency losses usually make this redundant; a degenerate optimum can
+      # still return simultaneous charge+discharge (verify flags it).  Enabling
+      # turns the model into a genuine MILP (a binary per timestep) — slower.
+
     hourly_re_penetration_penalty:
       enabled: false
       # Soft economic penalty applied whenever RE delivery at the meter falls

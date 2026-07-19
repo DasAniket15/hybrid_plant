@@ -184,3 +184,22 @@ def add_optional_constraints(
             + model.W * cfg.land_wind_acre_per_mw
             <= cfg.land_available_acres
         )
+
+    # ── strict_charge_discharge (D7 exclusivity, big-M binary) ────────────────
+    # Efficiency losses already deter simultaneous charge+discharge, but a
+    # degenerate optimum can still return both (verify surfaces this).  This
+    # toggle enforces it hard with a per-hour binary u: u=1 -> only charge,
+    # u=0 -> only discharge.  It turns the model into a genuine MILP (a binary
+    # per timestep), so enable only when full exclusivity is required.
+    if cfg.strict_cd_enabled:
+        m_chg = params.crc * params.nb_max * params.cs   # >= max chg (C9 bound)
+        m_dis = params.crd * params.nb_max * params.cs   # >= max dis (C10 bound)
+        model.u_cd = pyo.Var(model.H, domain=pyo.Binary)
+
+        @model.Constraint(model.H)
+        def opt_strict_charge(m, t: int) -> pyo.ConstraintData:
+            return m.chg[t] <= m_chg * m.u_cd[t]
+
+        @model.Constraint(model.H)
+        def opt_strict_discharge(m, t: int) -> pyo.ConstraintData:
+            return m.dis[t] <= m_dis * (1 - m.u_cd[t])
