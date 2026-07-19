@@ -127,6 +127,68 @@ def _lp_re_pen_cost(dispatch: dict[str, np.ndarray], params: OptParams) -> float
     return float(np.sum(shortfall * params.tod)) * 1000.0
 
 
+def tod_aware_annual_savings(
+    dispatch: dict[str, np.ndarray],
+    sizing:   dict[str, float],
+    params:   OptParams,
+) -> np.ndarray:
+    """
+    Decompose the LP's ToD-valued savings objective into a per-year (undiscounted)
+    series, so ``sum_t df[t] * series[t]`` reproduces the LP objective exactly.
+
+    This is the *reporting* counterpart of the single-year objective in
+    objective.py: revenue values avoided DISCOM at hourly ToD (net of wheeling +
+    tax); costs are the per-year financing / opex / capacity / aux terms whose
+    discounted sums are the objective's phi / G_* / A_N factors.
+
+    Returns
+    -------
+    np.ndarray shape (project_life,)  ToD-aware client savings per year (INR)
+    """
+    lf, ed = params.lf, params.eta_d
+    S, W, P, nb = sizing["S"], sizing["W"], sizing["P"], sizing["nb"]
+    net_tod = params.tod - (params.wheel + params.tax)      # (8760,)
+
+    # Dispatch-fixed avoided-cost sums (INR at unit degradation).
+    A_sd  = float(np.sum(net_tod * dispatch["sd"]))
+    A_wd  = float(np.sum(net_tod * dispatch["wd"]))
+    A_dis = float(np.sum(net_tod * ed * dispatch["dis"]))
+
+    total_capex = (
+        S * params.ac_dc * params.solar_rate
+        + W * params.wind_rate
+        + nb * params.cs * params.bess_rate
+        + params.trans_fixed
+    )
+    solar_dc = S * params.ac_dc
+    e_cap    = nb * params.cs
+    aux_rate = nb * lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
+
+    n = params.project_life
+    out = np.zeros(n)
+    for i in range(n):
+        t1 = i + 1
+        revenue = lf * 1000.0 * (
+            params.d_s[i] * A_sd + params.d_w[i] * A_wd + params.d_b[i] * A_dis
+        )
+        financing = total_capex * (
+            (params.debt_frac * params.emi_factor if t1 <= params.tenure else 0.0)
+            + params.eq_frac * params.roe
+        )
+        opex = (
+            solar_dc * (params.solar_om_rate * (1.0 + params.solar_om_esc) ** i
+                        + params.solar_trans_om_rate)
+            + W * (params.wind_om_rate * (1.0 + params.wind_om_esc) ** i
+                   + params.wind_trans_om_rate)
+            + e_cap * params.bess_om_rate
+            + params.land_lease_monthly * 12.0 * (1.0 + params.land_esc) ** i
+            + total_capex * params.insurance_pct
+        )
+        cap = params.cap_rate * P * 12.0
+        out[i] = revenue - financing - opex - cap - aux_rate
+    return out
+
+
 def run_pyomo_optimization(
     config:         FullConfig,
     data:           dict[str, Any],
@@ -182,16 +244,23 @@ def run_pyomo_optimization(
         fast_mode         = True,   # scalar degradation — matches single-mode LP
     )
 
+    # ToD-aware headline savings: per-year series + its NPV (== LP objective).
+    tod_annual = tod_aware_annual_savings(dispatch, sizing, params)
+    tod_npv = float(np.sum(params.df * tod_annual))
+
     result: dict[str, Any] = {
-        "engine":            "pyomo",
-        "best_params":       best_params,
-        "sizing":            sizing,
-        "status":            status,
-        "lp_objective_npv":  status["obj_val"],
-        "verify":            verify,
-        "year1":             year1,
-        "finance":           finance,
-        "lp_dispatch":       dispatch,
+        "engine":              "pyomo",
+        "best_params":         best_params,
+        "sizing":              sizing,
+        "status":              status,
+        "lp_objective_npv":    status["obj_val"],
+        # Headline: ToD-aware optimal-dispatch client savings (== LP objective).
+        "tod_savings_npv":     tod_npv,
+        "tod_annual_savings":  tod_annual,
+        "verify":              verify,
+        "year1":               year1,
+        "finance":             finance,      # flat-tariff breakdowns (LCOE, capex, opex)
+        "lp_dispatch":         dispatch,
     }
     if compute_oracle:
         oracle = compute_report(sizing, config, data, fast_mode=False)

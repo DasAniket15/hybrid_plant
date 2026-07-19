@@ -134,6 +134,17 @@ class TestPyomoPipelineEndToEnd:
         assert oracle > 0
         assert fin >= oracle - 1e6        # LP dispatch beats/ties the heuristic
 
+    def test_tod_annual_series_npvs_to_lp_objective(self, result: dict) -> None:
+        # The ToD-aware annual savings series must reproduce the LP objective
+        # exactly when discounted (it is the objective's per-year decomposition).
+        tod = result["tod_savings_npv"]
+        lp  = result["lp_objective_npv"]
+        assert abs(tod - lp) / abs(lp) < 1e-9
+        assert len(result["tod_annual_savings"]) == 25
+        # Degradation makes the series non-increasing after year 1.
+        s = result["tod_annual_savings"]
+        assert s[0] >= s[-1]
+
     def test_verify_hard_invariants(self, result: dict) -> None:
         hard = {"nonneg", "soc_bounds", "charge_cap", "discharge_cap",
                 "soc_dynamics", "solar_alloc", "wind_alloc", "ppa_cap", "load_balance"}
