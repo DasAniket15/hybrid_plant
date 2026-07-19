@@ -718,6 +718,9 @@ def _run_pyomo(config, data, outputs_dir) -> None:
     print(f"  {'LCOE (Rs/kWh)':<38} : {m['lcoe']:.3f}")
     print(f"  {'Landed vs DISCOM (Rs/kWh, Yr1)':<38} : {m['landed_y1']:.2f} vs {m['discom_tariff']:.2f}")
     print(f"  {'RE penetration / Plant CUF':<38} : {m['re_penetration']:.1f} % / {m['plant_cuf']:.1f} %")
+    dl = m["dev_payback_levered"]; du = m["dev_payback_unlevered"]
+    print(f"  {'Developer payback (levered/unlev)':<38} : "
+          f"{('Yr '+str(dl)) if dl else '>25y'} / {('Yr '+str(du)) if du else '>25y'}")
     print(f"  {'Post-solve verify':<38} : {'PASS' if m['verify_ok'] else 'CHECK'}")
 
     paths = write_dashboards(result, config, data, outputs_dir)

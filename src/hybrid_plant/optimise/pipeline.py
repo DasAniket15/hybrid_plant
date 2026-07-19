@@ -33,6 +33,7 @@ import numpy as np
 import pyomo.environ as pyo
 
 from hybrid_plant.config_loader import FullConfig
+from hybrid_plant.constants import MWH_TO_KWH
 from hybrid_plant.finance.finance_engine import FinanceEngine
 from hybrid_plant.optimise.build import build_single_year_model
 from hybrid_plant.optimise.config import OptModelConfig
@@ -189,6 +190,38 @@ def tod_aware_annual_savings(
     return out
 
 
+def developer_payback(finance: dict[str, Any]) -> dict[str, int | None]:
+    """
+    Developer payback years from the FinanceEngine result.
+
+    Revenue = LCOE x busbar kWh (the RE payment recovered from the client).
+
+      unlevered : first year cumulative (revenue - OPEX) >= total CAPEX
+                  (asset payback, ignores financing)
+      levered   : first year cumulative (revenue - OPEX - debt service) >= equity
+                  (equity payback; debt is borrowed and serviced from operations)
+
+    Returns None for a leg that never recovers within the project life.
+    """
+    lcd    = finance["lcoe_breakdown"]
+    cap    = finance["capex"]["total_capex"]
+    equity = lcd["equity_amount"]
+    lcoe   = finance["lcoe_inr_per_kwh"]
+    busbar = np.asarray(finance["energy_projection"]["delivered_pre_mwh"])
+    opex   = np.asarray(finance["opex_projection"])
+    debt_service = (np.asarray(lcd["interest_schedule"])
+                    + np.asarray(lcd["principal_schedule"]))
+
+    revenue = lcoe * busbar * MWH_TO_KWH
+    unlev = np.cumsum(revenue - opex)
+    lev   = np.cumsum(revenue - opex - debt_service)
+
+    def _cross(cum: np.ndarray, target: float) -> int | None:
+        return int(np.argmax(cum >= target) + 1) if cum[-1] >= target else None
+
+    return {"unlevered": _cross(unlev, cap), "levered": _cross(lev, equity)}
+
+
 def run_pyomo_optimization(
     config:         FullConfig,
     data:           dict[str, Any],
@@ -260,6 +293,7 @@ def run_pyomo_optimization(
         "verify":              verify,
         "year1":               year1,
         "finance":             finance,      # flat-tariff breakdowns (LCOE, capex, opex)
+        "developer_payback":   developer_payback(finance),
         "lp_dispatch":         dispatch,
     }
     if compute_oracle:

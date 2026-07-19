@@ -52,15 +52,6 @@ def _cr(v: float) -> float:
     return float(v) / CRORE_TO_RS
 
 
-def _payback_year(annual_savings: np.ndarray) -> int | None:
-    cum = 0.0
-    for i, s in enumerate(annual_savings, start=1):
-        cum += s
-        if cum > 0:
-            return i
-    return None
-
-
 def compute_metrics(result: dict[str, Any], config: FullConfig) -> dict[str, Any]:
     """Flatten the pipeline result into display-ready scalar metrics."""
     fi = result["finance"]
@@ -90,7 +81,10 @@ def compute_metrics(result: dict[str, Any], config: FullConfig) -> dict[str, Any
         "tod_npv_cr":     _cr(tod_npv),
         "savings_pct_y1": tod_annual[0] / baseline * 100.0,
         "cum_savings_cr": _cr(float(np.sum(tod_annual))),
-        "payback":        _payback_year(tod_annual),
+        # Developer payback (client-side payback is ~Year 1 by construction and
+        # will be revisited with the upcoming financing-structure change).
+        "dev_payback_levered":   result["developer_payback"]["levered"],
+        "dev_payback_unlevered": result["developer_payback"]["unlevered"],
         # context economics
         "flat_npv_cr":    _cr(fi["savings_npv"]),
         "rtc_npv_cr":     _cr(result["oracle_rtc_npv"]),
@@ -283,9 +277,13 @@ def _page(title: str, body: str) -> str:
 # Executive dashboard
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _pay_str(year: int | None) -> str:
+    return f"Year {year}" if year else "> 25 yr"
+
+
 def render_executive_dashboard(result: dict, config: FullConfig, data: dict) -> str:
     m = compute_metrics(result, config)
-    pay = "Year 1" if m["payback"] == 1 else (f"Year {m['payback']}" if m["payback"] else "—")
+    pay = _pay_str(m["dev_payback_levered"])
     verdict = (f"<b>{m['project_name']}</b> — a {m['S']:.0f} MW solar / {m['W']:.0f} MW wind / "
                f"{m['bess_mwh']:.0f} MWh BESS hybrid delivers <b>₹{m['tod_npv_cr']:,.0f} Cr</b> "
                f"of ToD-aware client savings over 25 years "
@@ -296,7 +294,7 @@ def render_executive_dashboard(result: dict, config: FullConfig, data: dict) -> 
     kpis = "".join([
         _kpi("Client Savings NPV (25 yr, ToD-aware)", f"₹{m['tod_npv_cr']:,.0f} Cr",
              f"{m['savings_pct_y1']:.0f}% below DISCOM baseline", cls="hero"),
-        _kpi("Payback", pay, "client saves from day one"),
+        _kpi("Developer payback", pay, "equity (levered)"),
         _kpi("Landed vs DISCOM", f"₹{m['landed_y1']:.2f}",
              f"vs grid ₹{m['discom_tariff']:.2f}/kWh (Yr 1)"),
         _kpi("RE Penetration", f"{m['re_penetration']:.0f}%", "of load met by renewables"),
@@ -325,7 +323,6 @@ def render_detailed_dashboard(result: dict, config: FullConfig, data: dict) -> s
     fi = result["finance"]
     cap = fi["capex"]
     lcd = fi["lcoe_breakdown"]
-    pay = "Year 1" if m["payback"] == 1 else (f"Year {m['payback']}" if m["payback"] else "—")
     vpill = ("<span class='pill ok'>PASS</span>" if m["verify_ok"]
              else "<span class='pill bad'>CHECK</span>")
 
@@ -351,7 +348,8 @@ def render_detailed_dashboard(result: dict, config: FullConfig, data: dict) -> s
         ("Transmission", f"₹{_cr(cap['transmission_capex']):,.1f} Cr"),
         ("WACC", f"{m['wacc']:.2f}%"),
         ("NPV total cost", f"₹{_cr(lcd['npv_total_cost']):,.1f} Cr"),
-        ("Payback", pay),
+        ("Dev payback — levered (equity)", _pay_str(m["dev_payback_levered"])),
+        ("Dev payback — unlevered (CAPEX)", _pay_str(m["dev_payback_unlevered"])),
     ])
 
     # 25-year table (ToD-aware savings)

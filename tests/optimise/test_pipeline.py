@@ -150,3 +150,12 @@ class TestPyomoPipelineEndToEnd:
                 "soc_dynamics", "solar_alloc", "wind_alloc", "ppa_cap", "load_balance"}
         rep = result["verify"]
         assert all(r.ok for r in rep.results if r.name in hard), str(rep)
+
+    def test_developer_payback(self, result: dict) -> None:
+        dp = result["developer_payback"]
+        assert dp["unlevered"] is None or 1 <= dp["unlevered"] <= 25
+        assert dp["levered"] is None or 1 <= dp["levered"] <= 25
+        # Positive leverage (project return > cost of debt): equity returns
+        # at least as fast as the whole asset.
+        if dp["unlevered"] and dp["levered"]:
+            assert dp["levered"] <= dp["unlevered"]
