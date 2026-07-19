@@ -129,6 +129,9 @@ class OptionalConstraintsConfig:
     peak_supply_enabled:           bool  = False
     peak_supply_min_pct:           float = 0.0
     peak_supply_hours:             tuple = ()      # 0-indexed hours-of-day
+    peak_supply_monthly_enabled:   bool  = False
+    peak_supply_monthly_min_pct:   float = 0.0
+    peak_supply_monthly_hours:     tuple = ()      # 0-indexed hours-of-day
     peak_discharge_enabled:        bool  = False
     peak_discharge_annual_mwh:     float = 0.0
     peak_discharge_hours:          tuple = ()      # 0-indexed hours-of-day
@@ -459,6 +462,7 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
     repen = _con("re_penetration")
     msav  = _con("minimum_savings_npv")
     psup  = _con("peak_supply_obligation")
+    psupm = _con("peak_supply_monthly")
     pdis  = _con("peak_bess_discharge")
     poi   = _con("poi_capacity")
     sdem  = _con("sanctioned_demand")
@@ -488,6 +492,9 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         peak_supply_enabled=bool(psup.get("enabled", False)),
         peak_supply_min_pct=float(psup.get("min_percent", 0.0)),
         peak_supply_hours=_hours0(psup),
+        peak_supply_monthly_enabled=bool(psupm.get("enabled", False)),
+        peak_supply_monthly_min_pct=float(psupm.get("min_percent", 0.0)),
+        peak_supply_monthly_hours=_hours0(psupm),
         peak_discharge_enabled=bool(pdis.get("enabled", False)),
         peak_discharge_annual_mwh=float(pdis.get("min_annual_mwh", 0.0)),
         peak_discharge_hours=_hours0(pdis),

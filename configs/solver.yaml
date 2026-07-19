@@ -128,17 +128,28 @@ solver:
 
     # ── Step 6b: Required (real India PPA / grid clauses) ─────────────────
     peak_supply_obligation:
-      enabled: false
+      enabled: true
       # RTC / FDRE-style guaranteed supply in defined peak blocks:
       #   Σ_{peak}(load − ddraw) ≥ min_percent/100 · Σ_{peak} load
       min_percent: 85
-      peak_hours: [19, 20, 21, 22]   # 1-indexed hours-of-day
+      peak_hours: [8, 9, 10, 11, 19, 20, 21, 22]   # 1-indexed hours-of-day
+
+    peak_supply_monthly:
+      enabled: false
+      # Monthly tier of the peak supply obligation. RTC/FDRE contracts usually
+      # pair an annual floor with a LOWER monthly floor, so a good annual
+      # average cannot mask a bad month. Applied per (year, month):
+      #   Σ_{peak∈month}(load − ddraw) ≥ min_percent/100 · Σ_{peak∈month} load
+      # Per-interval shortfalls are settled financially in real PPAs — model
+      # those with hourly_re_penetration_penalty, not a hard per-hour gate.
+      min_percent: 70
+      peak_hours: [8, 9, 10, 11, 19, 20, 21, 22]   # 1-indexed hours-of-day
 
     peak_bess_discharge:
       enabled: false
       # Firm BESS dispatch commitment inside the peak window (busbar MWh/yr):
       #   Σ_{peak} η_d·dis ≥ min_annual_mwh · n_years
-      peak_hours: [19, 20, 21, 22]   # 1-indexed
+      peak_hours: [8, 9, 10, 11, 19, 20, 21, 22]   # 1-indexed
       min_annual_mwh: 50000
 
     poi_capacity:

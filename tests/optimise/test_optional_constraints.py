@@ -149,7 +149,7 @@ _OPT_COMPONENTS = [
     "opt_min_bess_capacity", "opt_min_bess_discharge",
     "opt_re_penetration_min", "opt_re_penetration_max",
     # Step 6b
-    "opt_peak_supply_min", "opt_peak_discharge",
+    "opt_peak_supply_min", "opt_peak_supply_monthly", "opt_peak_discharge",
     "opt_poi_cap", "opt_sanctioned_demand",
     "opt_min_grid_drawal", "opt_energy_purchase_cap", "opt_land_area",
     # T7
@@ -353,6 +353,48 @@ class TestPeakSupply:
         )
         m, _ = _build(params, cfg, tiny)
         assert "optimal" not in _solve(m)["status"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6b. peak_supply_monthly (monthly tier)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPeakSupplyMonthly:
+
+    def test_low_floor_satisfied(self, params: OptParams, baseline: dict) -> None:
+        _, tc = _build(params, OptionalConstraintsConfig(), _FIXED)
+        mtr0, load_pk = _peak_meter(baseline["dispatch"], params, tc, PEAK)
+        floor_pct = 0.5 * (mtr0 / load_pk * 100.0)
+        cfg = OptionalConstraintsConfig(
+            peak_supply_monthly_enabled=True,
+            peak_supply_monthly_min_pct=floor_pct, peak_supply_monthly_hours=PEAK,
+        )
+        m, tc2 = _build(params, cfg, _FIXED)
+        st = _solve(m)
+        assert "optimal" in st["status"].lower()
+        assert hasattr(m, "opt_peak_supply_monthly")
+        d = extract_dispatch(m, n_hours=tc2.n_steps)
+        mtr, load_pk2 = _peak_meter(d, params, tc2, PEAK)
+        assert mtr >= (floor_pct / 100.0) * load_pk2 - 1e-3
+
+    def test_impossible_floor_infeasible(self, params: OptParams) -> None:
+        tiny = {"S": 5.0, "W": 5.0, "P": 100.0, "nb": 0}
+        cfg = OptionalConstraintsConfig(
+            peak_supply_monthly_enabled=True,
+            peak_supply_monthly_min_pct=99.9, peak_supply_monthly_hours=PEAK,
+        )
+        m, _ = _build(params, cfg, tiny)
+        assert "optimal" not in _solve(m)["status"].lower()
+
+    def test_one_constraint_per_month_full_year(self, params: OptParams) -> None:
+        """On a full 8760 single-year model there is one row per calendar month."""
+        from hybrid_plant.optimise.build import build_single_year_model
+        p = dataclasses.replace(params, opt_constraints=OptionalConstraintsConfig(
+            peak_supply_monthly_enabled=True,
+            peak_supply_monthly_min_pct=50.0, peak_supply_monthly_hours=PEAK))
+        m = build_single_year_model(OptModelConfig(horizon="single"), p,
+                                    fixed_sizing=_FIXED)
+        assert len(m.opt_peak_supply_monthly) == 12
 
 
 # ─────────────────────────────────────────────────────────────────────────────

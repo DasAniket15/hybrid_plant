@@ -25,7 +25,14 @@ re_penetration         min% ≤ Σ(load − ddraw) / Σ load · 100 ≤ max%
 
 Step 6b — Required (real India PPA / grid clauses):
 peak_supply_obligation Σ_{peak}(load − ddraw) ≥ min% · Σ_{peak} load
-                       RTC / FDRE guaranteed supply in defined peak blocks.
+                       RTC / FDRE guaranteed supply in defined peak blocks
+                       (annual tier — the primary compliance measure).
+peak_supply_monthly    per (year, month): Σ_{peak∈month}(load − ddraw)
+                         ≥ min% · Σ_{peak∈month} load
+                       Monthly tier — real contracts pair an annual floor with a
+                       lower monthly floor so a good annual average cannot mask a
+                       bad month.  Per-interval shortfalls are handled financially
+                       by hourly_re_penetration_penalty, not as a hard gate.
 peak_bess_discharge    Σ_{peak} η_d·dis ≥ min_annual_mwh · n_years
                        Firm BESS dispatch commitment in peak hours.
 poi_capacity           sd[t] + wd[t] + η_d·dis[t] ≤ poi_mw   (per hour)
@@ -58,6 +65,21 @@ import pyomo.environ as pyo
 
 from hybrid_plant.optimise.params import OptParams
 from hybrid_plant.optimise.sets import TimeContext
+
+_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)   # 365-day year
+
+
+def _month_of_hour(n_hours: int = 8760) -> np.ndarray:
+    """Map hour-of-year (0…8759) → month index 0…11 (non-leap calendar)."""
+    out = np.full(n_hours, 11, dtype=int)
+    h = 0
+    for m, days in enumerate(_MONTH_DAYS):
+        span = days * 24
+        out[h:min(h + span, n_hours)] = m
+        h += span
+        if h >= n_hours:
+            break
+    return out
 
 
 def add_optional_constraints(
@@ -137,6 +159,34 @@ def add_optional_constraints(
         model.opt_peak_supply_min = pyo.Constraint(
             expr=meter_peak >= (cfg.peak_supply_min_pct / 100.0) * load_peak
         )
+
+    # ── peak_supply_monthly (monthly tier of the peak obligation) ─────────────
+    # RTC / FDRE contracts commonly pair an annual floor with a lower monthly
+    # floor, so a good annual average cannot mask a bad month.  One constraint
+    # per (year, month) that contains peak hours.
+    if (cfg.peak_supply_monthly_enabled and cfg.peak_supply_monthly_hours
+            and cfg.peak_supply_monthly_min_pct > 0.0):
+        moy = _month_of_hour(len(params.load))[tc.hour_of]        # month per step
+        pk  = np.isin(hod, np.asarray(cfg.peak_supply_monthly_hours))
+        key = (tc.year_of - 1) * 12 + moy                          # distinct month
+        frac = cfg.peak_supply_monthly_min_pct / 100.0
+
+        groups: dict[int, np.ndarray] = {}
+        loads:  dict[int, float] = {}
+        for k in np.unique(key[pk]):
+            idx = np.nonzero(pk & (key == k))[0]
+            lo  = float(np.sum(params.load[tc.hour_of[idx]]))
+            if lo > 0.0:
+                groups[int(k)] = idx
+                loads[int(k)]  = lo
+
+        if groups:
+            def _monthly(m, k: int) -> pyo.ConstraintData:
+                idx = groups[k]
+                meter = loads[k] - pyo.quicksum(m.ddraw[int(t)] for t in idx)
+                return meter >= frac * loads[k]
+
+            model.opt_peak_supply_monthly = pyo.Constraint(sorted(groups), rule=_monthly)
 
     # ── peak_bess_discharge (firm dispatch commitment) ────────────────────────
     if cfg.peak_discharge_enabled and cfg.peak_discharge_hours and cfg.peak_discharge_annual_mwh > 0.0:
