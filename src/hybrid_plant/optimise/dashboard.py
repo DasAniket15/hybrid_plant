@@ -32,6 +32,7 @@ import numpy as np                # noqa: E402
 
 from hybrid_plant.config_loader import FullConfig  # noqa: E402
 from hybrid_plant.constants import CRORE_TO_RS      # noqa: E402
+from hybrid_plant.energy.year1_engine import _build_hourly_discom_tariff  # noqa: E402
 
 # Palette
 _TEAL = "#0f9d8f"
@@ -42,6 +43,38 @@ _GREEN = "#66bb6a"
 _RED = "#ef5350"
 _PURPLE = "#9b59b6"
 _INK = "#1a2b32"
+
+# ToD period colors (peak / solar-offpeak / normal) + muted dispatch palette
+_TOD_C = {"peak": "#e07a74", "solar": "#eebb46", "normal": "#aebac1"}
+_D_SOLAR, _D_WIND, _D_BESS, _D_INK, _D_SOC = "#eaa640", "#5b9bd5", "#5cb87a", "#33454d", "#8163bd"
+_PEAK_NAMES = {"morning_peak", "evening_peak"}
+
+
+def _tod_blocks(config: FullConfig) -> list[tuple]:
+    """
+    Contiguous ToD blocks for one day, from tariffs.yaml (LT period hours) +
+    the blended hourly DISCOM tariff the model actually uses.
+
+    Returns list of (start_hour, end_hour, category, rate_inr_per_kwh, label),
+    category in {"peak", "solar", "normal"}.  Nothing hardcoded — tracks config.
+    """
+    lt = config.tariffs["discom"]["lt"]["tod_periods"]
+    per: dict[int, str] = {}
+    for name, spec in lt.items():
+        for h in spec["hours"]:
+            per[(int(h) - 1) % 24] = name              # 1-indexed YAML → 0-indexed
+    tod = _build_hourly_discom_tariff(config, n_hours=8760)[:24]   # blended, one day
+
+    blocks: list[tuple] = []
+    h = 0
+    while h < 24:
+        name = per.get(h, "normal")
+        start = h
+        while h < 24 and per.get(h, "normal") == name:
+            h += 1
+        cat = "peak" if name in _PEAK_NAMES else ("solar" if "solar" in name else "normal")
+        blocks.append((start, h - 1, cat, float(tod[start]), name.replace("_", " ").title()))
+    return blocks
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,28 +222,75 @@ def _chart_opex(result: dict) -> str:
     return _fig_to_uri(fig)
 
 
-def _chart_dispatch_day(result: dict, params_load: np.ndarray, day: int = 250) -> str:
-    d = result["lp_dispatch"]
-    s = day * 24
+def _chart_dispatch_day(result: dict, config: FullConfig, load_arr: np.ndarray,
+                        day: int = 250) -> str:
+    """LP-optimal dispatch for one day with a ToD-period overlay (Option D1)."""
+    d = result["lp_dispatch"]; s = day * 24
     x = np.arange(24)
-    sd = d["sd"][s:s+24]; wd = d["wd"][s:s+24]
-    dis = d["dis"][s:s+24]; chg = d["chg"][s:s+24]; soc = d["soc"][s:s+24]
-    load = params_load[s:s+24]
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6.4, 4.6), sharex=True,
-                                   gridspec_kw={"height_ratios": [2, 1.4]})
-    ax1.bar(x, sd, color=_AMBER, label="Solar→load")
-    ax1.bar(x, wd, bottom=sd, color=_BLUE, label="Wind→load")
-    ax1.bar(x, dis, bottom=sd + wd, color=_GREEN, label="BESS discharge")
-    ax1.plot(x, load, color=_INK, lw=1.5, ls=":", label="Load")
-    ax1.set_ylabel("MWh/h"); ax1.legend(fontsize=7, ncol=2)
-    ax1.set_title(f"LP-optimal dispatch — Day {day} (busbar)", fontweight="bold", fontsize=11)
-    ax1.grid(True, alpha=0.2)
-    ax2.bar(x, chg, color=_GREEN, alpha=0.6, label="Charge")
-    ax2.bar(x, -dis, color=_BLUE, alpha=0.7, label="Discharge")
-    ax2r = ax2.twinx()
-    ax2r.plot(x, soc, color=_PURPLE, lw=2, label="SOC")
-    ax2.set_xlabel("Hour"); ax2.set_ylabel("MWh/h"); ax2r.set_ylabel("SOC (MWh)", color=_PURPLE)
-    ax2.legend(fontsize=7, loc="upper left"); ax2.grid(True, alpha=0.2)
+    sd = d["sd"][s:s+24]; wd = d["wd"][s:s+24]; dis = d["dis"][s:s+24]
+    chg = d["chg"][s:s+24]; soc = d["soc"][s:s+24]
+    load = load_arr[s:s+24]
+    blocks = _tod_blocks(config)
+
+    def _clean(ax):
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+        ax.spines["left"].set_color("#c9d3d8"); ax.spines["bottom"].set_color("#c9d3d8")
+        ax.tick_params(length=0, labelsize=8, colors="#5a6f77")
+        ax.grid(axis="y", alpha=0.12, lw=0.8); ax.set_axisbelow(True)
+
+    def _bands(ax, alpha):
+        for a, b, cat, *_ in blocks:
+            ax.axvspan(a - 0.5, b + 0.5, color=_TOD_C[cat], alpha=alpha, lw=0, zorder=0)
+
+    fig, (a1, a2, a3) = plt.subplots(3, 1, figsize=(8.4, 5.9), sharex=True,
+                                     gridspec_kw={"height_ratios": [2, 1.25, 0.9]})
+    fig.subplots_adjust(hspace=0.28)
+
+    # ── dispatch (top) ────────────────────────────────────────────────────────
+    _bands(a1, 0.20)
+    a1.bar(x, sd, color=_D_SOLAR, label="Solar → load", zorder=3)
+    a1.bar(x, wd, bottom=sd, color=_D_WIND, label="Wind → load", zorder=3)
+    a1.bar(x, dis, bottom=sd + wd, color=_D_BESS, label="BESS discharge", zorder=3)
+    a1.plot(x, load, color=_D_INK, lw=1.6, ls=(0, (2, 2)), label="Load", zorder=4)
+    a1.set_ylabel("MWh / h", fontsize=8.5)
+    a1.legend(fontsize=7.5, ncol=4, loc="upper left", frameon=False, bbox_to_anchor=(0, 1.02))
+    a1.set_title(f"LP-optimal dispatch — Day {day} (busbar)", fontweight="bold",
+                 loc="left", fontsize=11.5)
+    _clean(a1)
+
+    # ── charge / discharge + SOC (mid) ───────────────────────────────────────
+    _bands(a2, 0.20)
+    a2.bar(x, chg, color=_D_BESS, alpha=0.55, label="Charge", zorder=3)
+    a2.bar(x, -dis, color=_D_WIND, alpha=0.7, label="Discharge", zorder=3)
+    a2.axhline(0, color="#c9d3d8", lw=0.8)
+    a2r = a2.twinx(); a2r.plot(x, soc, color=_D_SOC, lw=2, zorder=4)
+    a2r.set_ylabel("SOC (MWh)", color=_D_SOC, fontsize=8.5)
+    a2r.tick_params(length=0, labelsize=8, colors=_D_SOC); a2r.spines["top"].set_visible(False)
+    a2.set_ylabel("MWh / h", fontsize=8.5)
+    a2.legend(fontsize=7.5, ncol=2, loc="upper left", frameon=False, bbox_to_anchor=(0, 1.04))
+    _clean(a2)
+
+    # ── ToD tariff — one bar per period, labelled once (bottom) ───────────────
+    rates = [b[3] for b in blocks]
+    lo, hi = min(rates), max(rates)
+    base = lo - 0.35
+    for a, b, cat, rate, lbl in blocks:
+        c = (a + b) / 2; w = b - a + 1
+        a3.bar(c, rate, width=w * 0.94, color=_TOD_C[cat], alpha=0.9, zorder=3)
+        if cat != "normal":
+            a3.text(c, rate + 0.06, f"{lbl}\n₹{rate:.2f}", ha="center", va="bottom",
+                    fontsize=7, fontweight="bold", color="#40525a")
+        else:
+            a3.text(c, base + 0.10, f"₹{rate:.2f}", ha="center", va="bottom",
+                    fontsize=6.5, color="#6a7c84")
+    a3.set_ylim(base, hi + 0.6)
+    a3.set_yticks([round(lo), round(hi)])
+    a3.set_ylabel("ToD ₹/kWh", fontsize=8.5)
+    _clean(a3)
+    a3.set_xlim(-0.6, 23.6); a3.set_xticks(range(0, 24, 3))
+    a3.set_xticklabels([f"{h:02d}" for h in range(0, 24, 3)])
+    a3.set_xlabel("Hour of day", fontsize=8.5)
     return _fig_to_uri(fig)
 
 
@@ -380,7 +460,7 @@ def render_detailed_dashboard(result: dict, config: FullConfig, data: dict) -> s
                f"<div class='card'><img src='{_chart_tariff(result, m)}'></div></div>")
     charts2 = (f"<div class='grid2'><div class='card'><img src='{_chart_energy_mix(result)}'></div>"
                f"<div class='card'><img src='{_chart_opex(result)}'></div></div>")
-    charts3 = f"<div class='card'><img src='{_chart_dispatch_day(result, load)}'></div>"
+    charts3 = f"<div class='card'><img src='{_chart_dispatch_day(result, config, load)}'></div>"
 
     body = (f"<h1>{m['project_name']}</h1>"
             f"<div class='sub'>{m['location']} · Detailed technical dashboard · "
