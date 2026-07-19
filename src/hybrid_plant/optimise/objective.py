@@ -59,6 +59,58 @@ import pyomo.environ as pyo
 from hybrid_plant.optimise.params import OptParams
 
 
+def _add_re_penetration_penalty(
+    model:       pyo.ConcreteModel,
+    params:      OptParams,
+    hour_of:     np.ndarray,
+    disc_weight: np.ndarray,
+) -> object:
+    """
+    Build the soft hourly RE-penetration penalty and return its (unscaled)
+    penalty expression, to be SUBTRACTED from savings.  Returns ``0.0`` when the
+    toggle is disabled or no hour qualifies.
+
+    Design (year1_engine parity):
+      shortfall[t] = max(min_pct·load[t] − re_meter[t], 0),  re_meter = load − ddraw
+                   = max(ddraw[t] − (1 − min_pct)·load[t], 0)
+      penalty      = Σ_t disc_weight[t] · shortfall[t] · 1000 · tod[hour(t)]
+
+    ``shortfall`` is an aux NonNegativeReals var lower-bounded by the breach;
+    the positive penalty cost drives it to exactly the breach (LP-exact).
+
+    Parameters
+    ----------
+    hour_of     : per-H hour-of-year index (single: identity 0…n−1; full: tc.hour_of)
+    disc_weight : per-H discount weight (single: A_N each hour; full: tc.disc)
+    """
+    if not params.re_pen_penalty_enabled:
+        return 0.0
+
+    min_pct = params.re_pen_min_pct                # decimal in [0, 1]
+    hrs     = params.re_pen_penalty_hours          # 0-indexed hours-of-day, () = all
+    hod     = np.asarray(hour_of) % 24
+    mask    = (np.ones(len(hour_of), dtype=bool) if len(hrs) == 0
+               else np.isin(hod, np.asarray(hrs)))
+    idx     = np.nonzero(mask)[0].tolist()
+    if not idx:
+        return 0.0
+
+    load = params.load
+    tod  = params.tod
+
+    model.re_pen_short = pyo.Var(idx, domain=pyo.NonNegativeReals)
+
+    def _floor(m, t: int) -> pyo.ConstraintData:
+        return m.re_pen_short[t] >= m.ddraw[t] - (1.0 - min_pct) * float(load[hour_of[t]])
+
+    model.re_pen_short_con = pyo.Constraint(idx, rule=_floor)
+
+    return pyo.quicksum(
+        float(disc_weight[t]) * model.re_pen_short[t] * 1000.0 * float(tod[hour_of[t]])
+        for t in idx
+    )
+
+
 def add_savings_npv_objective(
     model:  pyo.ConcreteModel,
     params: OptParams,
@@ -134,10 +186,18 @@ def add_savings_npv_objective(
     aux_net_rate = params.lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
     npv_aux = model.nb * aux_net_rate * params.A_N
 
+    # ── Soft hourly RE-penetration penalty (annual cost discounted at A_N) ────
+    n = len(model.H)
+    penalty = _add_re_penetration_penalty(
+        model, params,
+        hour_of=np.arange(n, dtype=int),
+        disc_weight=np.full(n, params.A_N),
+    )
+
     # ── Objective ─────────────────────────────────────────────────────────────
     model.obj = pyo.Objective(
         sense=pyo.maximize,
-        expr=rev_minus_gc - npv_financing - npv_opex - npv_cap - npv_aux,
+        expr=rev_minus_gc - npv_financing - npv_opex - npv_cap - npv_aux - penalty,
     )
 
 
@@ -222,9 +282,14 @@ def add_savings_npv_objective_full(
     aux_net_rate = lf * params.aux_pc * float(np.sum(net_tod)) * 1000.0
     npv_aux = model.nb * (aux_net_rate * params.A_N * _S)
 
+    # ── Soft hourly RE-penetration penalty (per-timestep disc[t], scaled by _S) ─
+    penalty = _S * _add_re_penetration_penalty(
+        model, params, hour_of=tc.hour_of, disc_weight=tc.disc,
+    )
+
     model.obj = pyo.Objective(
         sense=pyo.maximize,
-        expr=rev - npv_financing - npv_opex - npv_cap - npv_aux,
+        expr=rev - npv_financing - npv_opex - npv_cap - npv_aux - penalty,
     )
 
 
