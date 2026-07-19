@@ -693,9 +693,40 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    config         = load_config()
-    data           = load_timeseries_data(config)
+def _run_pyomo(config, data, outputs_dir) -> None:
+    """Pyomo cutover path: optimal-dispatch MILP → LP-economics HTML dashboards."""
+    from hybrid_plant.optimise.dashboard import compute_metrics, write_dashboards
+    from hybrid_plant.optimise.pipeline import run_pyomo_optimization
+
+    print("\nRunning Pyomo optimizer (single-year MILP) …")
+    result = run_pyomo_optimization(config, data, compute_oracle=True)
+    m = compute_metrics(result, config)
+
+    sep("PYOMO OPTIMAL CONFIGURATION")
+    print(f"\n  {'Solar (AC MW)':<34} : {m['S']:.2f}")
+    print(f"  {'Wind (MW)':<34} : {m['W']:.2f}")
+    print(f"  {'PPA cap (MW)':<34} : {m['P']:.2f}")
+    print(f"  {'BESS containers / MWh':<34} : {m['nb']} / {m['bess_mwh']:.1f}")
+    print(f"  {'Charge source':<34} : {m['charge_source']}")
+
+    sep("CLIENT SAVINGS")
+    print(f"\n  {'Savings NPV (ToD-aware, headline)':<38} : Rs {m['tod_npv_cr']:,.1f} Cr")
+    print(f"  {'  Savings vs baseline (Yr 1)':<38} : {m['savings_pct_y1']:.1f} %")
+    print(f"  {'  Flat-tariff estimate':<38} : Rs {m['flat_npv_cr']:,.1f} Cr")
+    print(f"  {'  RTC heuristic floor':<38} : Rs {m['rtc_npv_cr']:,.1f} Cr")
+    print(f"  {'  LP objective (ToD proxy)':<38} : Rs {m['lp_obj_cr']:,.1f} Cr")
+    print(f"  {'LCOE (Rs/kWh)':<38} : {m['lcoe']:.3f}")
+    print(f"  {'Landed vs DISCOM (Rs/kWh, Yr1)':<38} : {m['landed_y1']:.2f} vs {m['discom_tariff']:.2f}")
+    print(f"  {'RE penetration / Plant CUF':<38} : {m['re_penetration']:.1f} % / {m['plant_cuf']:.1f} %")
+    print(f"  {'Post-solve verify':<38} : {'PASS' if m['verify_ok'] else 'CHECK'}")
+
+    paths = write_dashboards(result, config, data, outputs_dir)
+    print(f"\n  Executive dashboard  -> {paths['executive']}")
+    print(f"  Detailed dashboard   -> {paths['detailed']}")
+
+
+def _run_optuna(config, data, outputs_dir) -> None:
+    """Legacy Optuna TPE path (kept behind the engine flag)."""
     energy_engine  = Year1Engine(config, data)
     finance_engine = FinanceEngine(config, data)
     solver         = SolverEngine(config, data, energy_engine, finance_engine)
@@ -720,8 +751,30 @@ if __name__ == "__main__":
     print(f"\n  {'Trials completed':<38} : {result.n_trials_completed}")
     print(f"  {'Feasible trials':<38} : {result.n_trials_feasible}")
 
+    plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
+    plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")
+
+
+if __name__ == "__main__":
+    import sys
+    # Console may be cp1252 on Windows; the dashboards/section separators use
+    # Unicode. Prefer UTF-8 stdout, ignore if the stream cannot be reconfigured.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+    config = load_config()
+    data   = load_timeseries_data(config)
+
     outputs_dir = find_project_root() / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    plot_dashboard(params, y1, fi, data, outputs_dir / "model_output.png")
-    plot_day250(params, config, data, outputs_dir / "day250_dispatch.png")
+    # Engine switch (solver.yaml → solver.engine): "pyomo" (default) | "optuna".
+    engine = config.solver["solver"].get("engine", "pyomo").lower()
+    if engine == "pyomo":
+        _run_pyomo(config, data, outputs_dir)
+    elif engine == "optuna":
+        _run_optuna(config, data, outputs_dir)
+    else:
+        raise ValueError(f"Unknown solver.engine {engine!r}; use 'pyomo' or 'optuna'.")
