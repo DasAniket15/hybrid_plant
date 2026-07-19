@@ -178,6 +178,7 @@ class OptParams:
     aux_pc: float        # aux draw per active container per hour (MWh)
     crc:    float        # fixed charge C-rate (fraction of E_b per hour)
     crd:    float        # fixed discharge C-rate
+    bess_charge_source: str   # "solar_only" | "wind_only" | "solar_and_wind" (D5)
 
     # ── Grid charges ──────────────────────────────────────────────────────────
     wheel:    float      # blended wheeling rate (INR/kWh)
@@ -308,6 +309,16 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         dv_cfg.get("bess_discharge_c_rate", {}).get("fixed_value")
         or dv_cfg.get("bess_discharge_c_rate", {}).get("max", 1.0)
     )
+
+    # BESS charge source (D5): default solar_only (current Phase-1 behaviour).
+    charge_source = str(
+        dv_cfg.get("bess_charge_source", {}).get("fixed_value", "solar_only")
+    )
+    if charge_source not in {"solar_only", "wind_only", "solar_and_wind"}:
+        raise ValueError(
+            f"Invalid bess_charge_source {charge_source!r}; expected "
+            "'solar_only', 'wind_only', or 'solar_and_wind'."
+        )
 
     # ── Grid charges ─────────────────────────────────────────────────────────
     rc       = config.finance["regulatory_charges"]
@@ -513,6 +524,7 @@ def build_params(config: FullConfig, data: dict[str, Any]) -> OptParams:
         aux_pc=aux_pc,
         crc=crc,
         crd=crd,
+        bess_charge_source=charge_source,
         # Grid charges
         wheel=wheel,
         tax=tax,

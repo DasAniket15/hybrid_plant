@@ -85,3 +85,9 @@ def add_dispatch_vars(
     model.dis   = pyo.Var(H, domain=pyo.NonNegativeReals)
     model.soc   = pyo.Var(H, domain=pyo.NonNegativeReals)
     model.ddraw = pyo.Var(H, domain=pyo.NonNegativeReals)
+
+    # D5 charge-source split: chg_w = wind-sourced portion of the total charge
+    # chg (solar portion = chg - chg_w).  Only created when the battery may
+    # charge from wind; solar_only (default) keeps the base model unchanged.
+    if params.bess_charge_source != "solar_only":
+        model.chg_w = pyo.Var(H, domain=pyo.NonNegativeReals)

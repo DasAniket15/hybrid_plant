@@ -131,6 +131,8 @@ def check_invariants(
     sd, wd  = dispatch["sd"], dispatch["wd"]
     chg, dis = dispatch["chg"], dispatch["dis"]
     soc, ddraw = dispatch["soc"], dispatch["ddraw"]
+    # D5 charge split: wind portion of chg (zeros when charging is solar_only).
+    chg_w = dispatch.get("chg_w", np.zeros_like(chg))
 
     S = float(sizing["S"]); W = float(sizing["W"])
     P = float(sizing["P"]); nb = float(sizing["nb"])
@@ -169,11 +171,12 @@ def check_invariants(
     add("soc_dynamics", _eq(soc, soc_prev + eta_c * chg - dis, atol, rtol),
         "soc recursion broken")
 
-    # allocation (C1/C2)
-    add("solar_alloc", _le(sd + chg, S * tc.deg_s * params.cuf_s[hour], atol, rtol),
-        "sd+chg exceeds solar availability")
-    add("wind_alloc", _le(wd, W * tc.deg_w * params.cuf_w[hour], atol, rtol),
-        "wd exceeds wind availability")
+    # allocation (C1/C2); with the D5 split, solar carries chg-chg_w and wind
+    # carries chg_w (chg_w = 0 for solar_only reduces to the base form).
+    add("solar_alloc", _le(sd + chg - chg_w, S * tc.deg_s * params.cuf_s[hour], atol, rtol),
+        "sd+(chg-chg_w) exceeds solar availability")
+    add("wind_alloc", _le(wd + chg_w, W * tc.deg_w * params.cuf_w[hour], atol, rtol),
+        "wd+chg_w exceeds wind availability")
 
     # ppa cap (C5)
     add("ppa_cap", _le(sd + wd + eta_d * dis, np.full_like(sd, P), atol, rtol),

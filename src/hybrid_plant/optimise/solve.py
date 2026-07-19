@@ -200,7 +200,7 @@ def extract_dispatch(
     def _arr(var: pyo.Var) -> "np.ndarray":
         return np.array([pyo.value(var[h]) for h in range(n_hours)], dtype=np.float64)
 
-    return {
+    out = {
         "sd":    _arr(model.sd),
         "wd":    _arr(model.wd),
         "chg":   _arr(model.chg),
@@ -208,3 +208,7 @@ def extract_dispatch(
         "soc":   _arr(model.soc),
         "ddraw": _arr(model.ddraw),
     }
+    # D5 split: wind-sourced charge portion, present only for wind/both sources.
+    if hasattr(model, "chg_w"):
+        out["chg_w"] = _arr(model.chg_w)
+    return out
