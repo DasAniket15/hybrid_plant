@@ -31,7 +31,7 @@ from hybrid_plant.optimise.objective import (
     add_savings_npv_objective_full,
 )
 from hybrid_plant.optimise.params import OptParams, build_params
-from hybrid_plant.optimise.sets import TimeContext, add_sets, build_time_context
+from hybrid_plant.optimise.sets import TimeContext, add_sets
 from hybrid_plant.optimise.solve import extract_dispatch, solve
 from hybrid_plant.optimise.variables import add_dispatch_vars, add_sizing_vars
 from hybrid_plant.optimise.verify import check_invariants, verify_solution

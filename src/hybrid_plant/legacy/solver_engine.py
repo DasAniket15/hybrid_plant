@@ -25,7 +25,7 @@ Future-scope variables are fixed at their ``fixed_value`` from ``solver.yaml``.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -326,7 +326,7 @@ class SolverEngine:
             return savings_npv if feasible else PENALTY
 
         except Exception as exc:
-            warnings.warn(f"Trial {trial.number} failed: {exc}")
+            warnings.warn(f"Trial {trial.number} failed: {exc}", stacklevel=2)
             self._trial_log.append({
                 "trial_number":      trial.number,
                 "feasible":          False,
@@ -393,12 +393,11 @@ class SolverEngine:
         }
         full_result = self._evaluate(best_params)
         finance     = full_result["finance"]
-        year1       = full_result["year1"]
 
         trials_df = pd.DataFrame(self._trial_log)
         if not trials_df.empty and "savings_npv_cr" in trials_df.columns:
             trials_df = (
-                trials_df[trials_df["feasible"] == True]
+                trials_df[trials_df["feasible"]]
                 .sort_values("savings_npv_cr", ascending=False)
                 .reset_index(drop=True)
             )

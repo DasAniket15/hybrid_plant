@@ -102,6 +102,7 @@ class LandedTariffModel:
         for busbar_mwh, meter_mwh in zip(
             busbar_energy_mwh_projection,
             meter_energy_mwh_projection,
+            strict=True,
         ):
             busbar_kwh = float(busbar_mwh) * MWH_TO_KWH
             meter_kwh  = float(meter_mwh)  * MWH_TO_KWH

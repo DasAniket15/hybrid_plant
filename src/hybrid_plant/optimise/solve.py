@@ -197,7 +197,7 @@ def extract_dispatch(
     if n_hours is None:
         n_hours = len(model.H)
 
-    def _arr(var: pyo.Var) -> "np.ndarray":
+    def _arr(var: pyo.Var) -> np.ndarray:
         return np.array([pyo.value(var[h]) for h in range(n_hours)], dtype=np.float64)
 
     out = {

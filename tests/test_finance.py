@@ -27,7 +27,6 @@ from hybrid_plant.finance.finance_engine import FinanceEngine
 from hybrid_plant.finance.lcoe_model import LCOEModel
 from hybrid_plant.finance.opex_model import OpexModel
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-scoped engine fixtures with penalty constraint disabled.
 # These shadow the session-scoped fixtures from conftest.py so that finance
@@ -139,7 +138,7 @@ class TestOpexModel:
 
     def test_breakdown_totals_match_projection(self, opex_result):
         projection, breakdown = opex_result
-        for i, (total, row) in enumerate(zip(projection, breakdown)):
+        for i, (total, row) in enumerate(zip(projection, breakdown, strict=True)):
             assert abs(total - row["total"]) < 1.0, f"Year {i+1} total mismatch"
 
 

@@ -42,7 +42,7 @@ def section(title: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 section("1. CONFIG LOADER")
 try:
-    from hybrid_plant.config_loader import load_config, FullConfig
+    from hybrid_plant.config_loader import FullConfig, load_config
     config = load_config()
     check("load_config() returns FullConfig",       isinstance(config, FullConfig))
     check("project.yaml loaded",                   "project" in config.project)
@@ -86,7 +86,7 @@ except Exception as e:
 # ─────────────────────────────────────────────────────────────────────────────
 section("3. CONSTANTS")
 try:
-    from hybrid_plant.constants import MWH_TO_KWH, LAKH_TO_RS, CRORE_TO_RS, HOURS_PER_YEAR
+    from hybrid_plant.constants import CRORE_TO_RS, HOURS_PER_YEAR, LAKH_TO_RS, MWH_TO_KWH
     check("MWH_TO_KWH = 1000",                     MWH_TO_KWH   == 1_000.0)
     check("LAKH_TO_RS = 1e5",                      LAKH_TO_RS   == 1e5)
     check("CRORE_TO_RS = 1e7",                     CRORE_TO_RS  == 1e7)
@@ -146,8 +146,8 @@ SOLAR_PARAMS = dict(
 )
 
 try:
-    from hybrid_plant.energy.plant_engine import PlantEngine
     from hybrid_plant.energy.grid_interface import GridInterface
+    from hybrid_plant.energy.plant_engine import PlantEngine
     pe  = PlantEngine(config, data)
     lf  = GridInterface(config).loss_factor
     res = pe.simulate(loss_factor=lf, **SOLAR_PARAMS)
@@ -243,7 +243,7 @@ try:
     check("all years positive",                     all(v > 0 for v in proj))
     check("year 25 ≥ year 1 (escalation)",          proj[-1] >= proj[0],
           f"Y1={round(proj[0]/1e7,3)} Cr  Y25={round(proj[-1]/1e7,3)} Cr")
-    total_err = max(abs(p - b["total"]) for p, b in zip(proj, breakdown))
+    total_err = max(abs(p - b["total"]) for p, b in zip(proj, breakdown, strict=True))
     check("breakdown totals match projection",      total_err < 1.0,
           f"max err = {total_err:.4f}")
 except Exception as e:
@@ -255,8 +255,8 @@ except Exception as e:
 # ─────────────────────────────────────────────────────────────────────────────
 section("10. LCOE MODEL")
 try:
-    from hybrid_plant.finance.lcoe_model import LCOEModel
     from hybrid_plant.constants import PERCENT_TO_DECIMAL
+    from hybrid_plant.finance.lcoe_model import LCOEModel
     lm  = LCOEModel(config)
     fin = config.finance["financing"]
     d   = fin["debt_percent"]                          * PERCENT_TO_DECIMAL

@@ -20,7 +20,6 @@ from hybrid_plant._paths import find_project_root
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.constants import HOURS_PER_YEAR, MWH_TO_KWH
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Degradation curve convention
 # ─────────────────────────────────────────────────────────────────────────────

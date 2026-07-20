@@ -38,3 +38,18 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    # The codebase deliberately packs paired one-liners (matplotlib axis setup,
+    # aligned assignments). Enforcing these would churn ~50 lines to no benefit.
+    "E701",   # multiple statements on one line (colon)
+    "E702",   # multiple statements on one line (semicolon)
+    # Aligned assignment blocks (`energy_engine  = ...`) are house style.
+    "E221",   # multiple spaces before operator
+    # line-length above stays the formatting target, but width is not a CI gate:
+    # 60 existing lines overflow (median 105, max 143), mostly print/format
+    # strings where reflowing hurts readability.
+    "E501",   # line too long
+]

@@ -26,12 +26,13 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt   # noqa: E402
-import numpy as np                # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 
 from hybrid_plant.config_loader import FullConfig  # noqa: E402
-from hybrid_plant.constants import CRORE_TO_RS      # noqa: E402
+from hybrid_plant.constants import CRORE_TO_RS  # noqa: E402
 from hybrid_plant.energy.year1_engine import _build_hourly_discom_tariff  # noqa: E402
 
 # Palette
@@ -208,7 +209,7 @@ def _chart_opex(result: dict) -> str:
             ("Transmission", None), ("Land", "land_lease"), ("Insurance", "insurance")]
     cols = [_AMBER, _BLUE, _GREEN, _PURPLE, "#ff7043", "#78909c"]
     series = []
-    for label, key in keys:
+    for _label, key in keys:
         if key is None:
             series.append(np.array([x["solar_transmission_om"] + x["wind_transmission_om"]
                                     for x in ob]) / CRORE_TO_RS)
@@ -449,7 +450,7 @@ def render_detailed_dashboard(result: dict, config: FullConfig, data: dict) -> s
              f"<th>OPEX ₹Cr</th><th>Landed ₹/kWh</th><th>Savings ₹Cr</th>"
              f"<th>Cum ₹Cr</th></tr></thead><tbody>{rows}</tbody></table>")
 
-    recon = (f"<div class='recon'>"
+    recon = ("<div class='recon'>"
              + _kpi("ToD-aware (headline)", f"₹{m['tod_npv_cr']:,.0f} Cr", "optimal dispatch · hourly ToD")
              + _kpi("Flat-tariff estimate", f"₹{m['flat_npv_cr']:,.0f} Cr", "FinanceEngine · ToD-blind")
              + _kpi("RTC heuristic floor", f"₹{m['rtc_npv_cr']:,.0f} Cr", "legacy controller dispatch")

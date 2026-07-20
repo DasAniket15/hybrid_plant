@@ -145,7 +145,7 @@ class EnergyProjection:
         if col not in df.columns:
             raise ValueError(f"'{column}' column not found in {path}")
 
-        return dict(zip(df["year"].astype(int), df[col]))
+        return dict(zip(df["year"].astype(int), df[col], strict=True))
 
     # ─────────────────────────────────────────────────────────────────────────
 

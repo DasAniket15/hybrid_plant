@@ -173,8 +173,8 @@ def print_section3(params, y1, fi, data, energy_engine):
     print(f"  {'Excess Energy / Curtailment (MWh)':<38} : {round(curtailment, 1)}")
     print(f"\n  {'── BESS FLOWS (Pre-Loss)'}")
     print(f"  {'BESS Charging (MWh)':<38} : {round(charge_pre, 1)}")
-    print(f"  {'Charge Loss (ηc=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.charge_eff):<38} : {round(charge_loss, 1)}")
-    print(f"  {'Discharge Loss (ηd=1-{:.4f}) (MWh)'.format(1-energy_engine.plant.discharge_eff):<38} : {round(discharge_loss, 1)}")
+    print(f"  {f'Charge Loss (ηc=1-{1-energy_engine.plant.charge_eff:.4f}) (MWh)':<38} : {round(charge_loss, 1)}")
+    print(f"  {f'Discharge Loss (ηd=1-{1-energy_engine.plant.discharge_eff:.4f}) (MWh)':<38} : {round(discharge_loss, 1)}")
     print(f"  {'Aux Consumption (MWh)':<38} : {round(aux_loss, 1)}")
     print(f"  {'End-of-Year SOC (MWh)':<38} : {round(end_soc, 1)}")
     print(f"\n  {'── METER (Post-Loss)'}")
@@ -236,7 +236,6 @@ def print_section4(fi):
 def print_section5(fi, y1, config):
     sep("SECTION 5 — CLIENT SAVINGS")
     sv             = fi["savings_breakdown"]
-    lts            = fi["landed_tariff_series"]
     annual_savings = sv["annual_savings"]
     baseline       = sv["baseline_annual_cost"]
     savings_y1     = annual_savings[0]
@@ -388,7 +387,7 @@ def plot_dashboard(params, y1, fi, data, output_path: Path) -> None:
     ax2.axhline(sv["discom_tariff"], color=C["discom"], linewidth=1.5, linestyle="--",
                 label=f"DISCOM Avg (Rs {round(sv['discom_tariff'],2)})")
     ax2.fill_between(years, lts, sv["discom_tariff"],
-                     where=[l < sv["discom_tariff"] for l in lts],
+                     where=[tariff < sv["discom_tariff"] for tariff in lts],
                      alpha=0.15, color=C["savings"], label="Savings band")
     ax2.set_title("Landed Tariff vs DISCOM Tariff", fontweight="bold")
     ax2.set_xlabel("Year"); ax2.set_ylabel("Rs / kWh")
@@ -464,7 +463,6 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
     load = data["load_profile"]
 
     s = DAY * 24
-    hods = np.arange(24)
 
     solar_d = res["solar_direct_pre"][s:s+24]
     disc    = res["discharge_pre"][s:s+24]
@@ -668,7 +666,7 @@ def plot_day250(params: dict, config, data: dict, output_path: Path) -> None:
                        rotation=45, ha="right", fontsize=8)
     ax.set_xlabel("Hour of Day", fontsize=10)
     ax.grid(axis="y", alpha=0.3)
-    for bar, rate in zip(bars, rates):
+    for bar, rate in zip(bars, rates, strict=True):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
                 f"{rate:.3f}", ha="center", va="bottom", fontsize=6.5, rotation=90)
 

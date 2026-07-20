@@ -54,7 +54,6 @@ from hybrid_plant.optimise.sets import TimeContext, add_sets, build_time_context
 from hybrid_plant.optimise.solve import extract_dispatch, solve, solve_relax_and_snap
 from hybrid_plant.optimise.variables import add_dispatch_vars, add_sizing_vars
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────

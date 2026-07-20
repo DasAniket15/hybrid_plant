@@ -31,7 +31,6 @@ min_savings_npv  obj_val ≥ min_value            (report-only gate, if enabled)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pyomo.environ as pyo
@@ -39,7 +38,6 @@ import pyomo.environ as pyo
 from hybrid_plant.optimise.params import OptParams
 from hybrid_plant.optimise.sets import TimeContext
 from hybrid_plant.optimise.solve import extract_dispatch
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Result containers

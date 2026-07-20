@@ -38,14 +38,11 @@ from hybrid_plant.constants import (
     CRORE_TO_RS,
     HOURS_PER_DAY,
     LAKH_TO_RS,
-    MONTHS_PER_YEAR,
-    MWH_TO_KWH,
     PERCENT_TO_DECIMAL,
 )
 from hybrid_plant.data_loader import operating_value
 from hybrid_plant.energy.grid_interface import GridInterface
 from hybrid_plant.energy.year1_engine import _build_hourly_discom_tariff
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -65,7 +62,7 @@ def _load_degrad_curve(path: Path, value_col: str) -> dict[int, float]:
     col = value_col.lower()
     if col not in df.columns:
         raise ValueError(f"'{value_col}' column not found in {path}")
-    return dict(zip(df["year"].astype(int), df[col]))
+    return dict(zip(df["year"].astype(int), df[col], strict=True))
 
 
 def _g_esc(df_arr: np.ndarray, esc: float) -> float:

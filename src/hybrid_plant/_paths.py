@@ -10,8 +10,8 @@ inside the package tree.
 
 from __future__ import annotations
 
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
 
 @lru_cache(maxsize=1)

@@ -37,7 +37,6 @@ from hybrid_plant.finance.lcoe_model import LCOEModel
 from hybrid_plant.finance.opex_model import OpexModel
 from hybrid_plant.optimise.params import OptParams, build_params
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Session fixtures
 # ─────────────────────────────────────────────────────────────────────────────
@@ -488,10 +487,11 @@ class TestPrecomputed:
 class TestDegradation:
     def _load_curve(self, path_str: str, col: str) -> dict:
         import pandas as pd
+
         from hybrid_plant._paths import find_project_root
         df = pd.read_csv(find_project_root() / path_str)
         df.columns = df.columns.str.strip().str.lower()
-        return dict(zip(df["year"].astype(int), df[col.lower()]))
+        return dict(zip(df["year"].astype(int), df[col.lower()], strict=True))
 
     def test_d_s_shape(self, config: FullConfig, params: OptParams) -> None:
         assert len(params.d_s) == params.project_life

@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from hybrid_plant.config_loader import FullConfig
-from hybrid_plant.constants import PERCENT_TO_DECIMAL
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
 

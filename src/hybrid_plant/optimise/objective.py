@@ -204,7 +204,7 @@ def add_savings_npv_objective(
 def add_savings_npv_objective_full(
     model:  pyo.ConcreteModel,
     params: OptParams,
-    tc:     "object",
+    tc:     object,
     scale:  float = 1e-7,
 ) -> None:
     """

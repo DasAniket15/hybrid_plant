@@ -133,7 +133,7 @@ class SavingsModel:
         annual_re_pen:      list[float] = []
 
         for t, (landed_t, meter_mwh_t) in enumerate(
-            zip(landed_tariff_series, meter_energy_mwh_projection)
+            zip(landed_tariff_series, meter_energy_mwh_projection, strict=True)
         ):
             re_kwh_t     = float(meter_mwh_t) * MWH_TO_KWH
             discom_kwh_t = self._annual_load_kwh - re_kwh_t

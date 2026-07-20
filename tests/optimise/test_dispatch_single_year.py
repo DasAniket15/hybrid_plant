@@ -199,7 +199,6 @@ class TestLayer1Algebraic:
         sd      = plant_year1["solar_direct_pre"]
         wd      = plant_year1["wind_direct_pre"]
         dis_raw = plant_year1["discharge_pre"] / params.eta_d
-        E_b     = _FIXED["nb"] * params.cs
 
         lf, eta_d, aux_pc = params.lf, params.eta_d, params.aux_pc
         nb = _FIXED["nb"]

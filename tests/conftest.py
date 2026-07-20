@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import pytest
 
-from hybrid_plant.config_loader import load_config, FullConfig
+from hybrid_plant.config_loader import FullConfig, load_config
 from hybrid_plant.data_loader import load_timeseries_data
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bootstrap
