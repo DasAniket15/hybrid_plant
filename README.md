@@ -92,6 +92,14 @@ The solver is HiGHS, pulled in as the `highspy` wheel — no separate system
 install. `optuna` is **not** a runtime dependency; it is needed only for the
 legacy engine (`pip install -e ".[legacy]"`).
 
+> **Git worktrees do not isolate this project.**
+> `_paths.find_project_root()` walks up from the *installed package file*, not
+> the working directory. With an editable install, code and configs always
+> resolve to the repo that was `pip install -e`'d — so a test run inside a
+> worktree silently reads the main checkout's `configs/` and `src/`, and
+> comparing two worktrees measures the same thing twice. To test another
+> revision, either install it into its own venv or change the file in place.
+
 ## Optimisation engine
 
 `solver.yaml → solver.engine` selects the path:
@@ -171,8 +179,14 @@ continuity is a bug, not a result.
 
 ## Current scope notes
 
-- **Wind is bounded to 0 MW** in `solver.yaml` (`wind_capacity_mw.max`), so
-  solves are solar + BESS. Raise the bound to re-enable it.
+- **Solar + wind + BESS are all live.** Reference optimum is roughly
+  `S=71.8 MW`, `W=95.3 MW`, `P=56.4 MW`, 19 BESS containers, LP objective
+  ~1019 Cr. The slow tests pin these, so they will fail loudly if a config edit
+  moves the optimum — that is the intent.
+- **The `wind_capacity_mw.max` bound is load-bearing.** Setting it to 0 forces a
+  solar-only portfolio that loses diurnal complementarity with the load: the
+  optimizer compensates with ~3x the solar and ~8x the BESS and still lands at
+  roughly half the client savings. Change it deliberately, not incidentally.
 - **BESS augmentation is not on this branch.** The cohort-based 25-year
-  augmentation engine lives on `augmentation-v3` and is planned to be rebuilt
-  on top of the single-mode LP.
+  augmentation engine is preserved at tag `archive/augmentation-v3` and is
+  planned to be rebuilt on top of the single-mode LP.
