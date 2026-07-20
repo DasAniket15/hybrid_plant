@@ -6,8 +6,13 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv-*/
 venv/
 env/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
 
 # Package install (editable)
 *.egg-link
@@ -35,10 +40,8 @@ Thumbs.db
 model_output.png
 solver_validation.png
 
-# Knowledge graph — generated outputs and cache
-graphify-out/cache/
-graphify-out/graph.json
-graphify-out/graph.html
+# Knowledge graph — fully generated, not a source artefact
+graphify-out/
 
 # Claude Code — local settings and runtime files
 .claude/settings.local.json

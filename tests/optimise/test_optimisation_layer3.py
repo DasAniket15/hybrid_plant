@@ -55,7 +55,7 @@ from hybrid_plant.optimise.solve import extract_dispatch, solve
 
 _OPTUNA_REGEN_HINT = """
 To regenerate tests/optimise/optuna_reference.json:
-    from hybrid_plant.solver.solver_engine import SolverEngine
+    from hybrid_plant.legacy.solver_engine import SolverEngine
     solver = SolverEngine(config, data, Year1Engine(config, data),
                           FinanceEngine(config, data))
     res = solver.run(n_trials=1500, show_progress=False)   # seed from solver.yaml

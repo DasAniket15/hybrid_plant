@@ -11,7 +11,6 @@ dependencies = [
     "numpy",
     "pandas",
     "pyyaml",
-    "optuna",
     "matplotlib",
     "pyomo>=6.7",
     "highspy>=1.7",
@@ -21,10 +20,14 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "plotly",
+    "ruff>=0.6",
+    "optuna",          # required by the slow tests/test_solver.py legacy suite
 ]
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/hybrid_plant"]
+# Legacy Optuna TPE search path (hybrid_plant.legacy.solver_engine).
+# Not used by the production Pyomo engine; install only to run engine: optuna.
+legacy = [
+    "optuna",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

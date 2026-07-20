@@ -20,7 +20,7 @@ import pytest
 from hybrid_plant.config_loader import FullConfig
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
-from hybrid_plant.solver.solver_engine import SolverEngine, SolverResult
+from hybrid_plant.legacy.solver_engine import SolverEngine, SolverResult
 
 
 def _config_no_penalty(config: FullConfig) -> FullConfig:

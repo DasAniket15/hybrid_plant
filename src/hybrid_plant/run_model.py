@@ -36,7 +36,6 @@ from hybrid_plant.energy.grid_interface import GridInterface
 from hybrid_plant.energy.plant_engine import PlantEngine
 from hybrid_plant.energy.year1_engine import Year1Engine
 from hybrid_plant.finance.finance_engine import FinanceEngine
-from hybrid_plant.solver.solver_engine import SolverEngine
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -729,7 +728,19 @@ def _run_pyomo(config, data, outputs_dir) -> None:
 
 
 def _run_optuna(config, data, outputs_dir) -> None:
-    """Legacy Optuna TPE path (kept behind the engine flag)."""
+    """Legacy Optuna TPE path (kept behind the engine flag).
+
+    ``optuna`` is an optional dependency, so the import is deferred to call
+    time — importing this module must not require it.
+    """
+    try:
+        from hybrid_plant.legacy.solver_engine import SolverEngine
+    except ModuleNotFoundError as exc:  # pragma: no cover - install-time guard
+        raise ModuleNotFoundError(
+            "The legacy 'optuna' engine requires the optuna package. "
+            'Install it with: pip install -e ".[legacy]"'
+        ) from exc
+
     energy_engine  = Year1Engine(config, data)
     finance_engine = FinanceEngine(config, data)
     solver         = SolverEngine(config, data, energy_engine, finance_engine)

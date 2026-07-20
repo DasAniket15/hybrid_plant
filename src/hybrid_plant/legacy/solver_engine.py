@@ -1,6 +1,14 @@
 """
 solver_engine.py
 ────────────────
+DEPRECATED — superseded by the Pyomo LP in ``hybrid_plant.optimise``.
+
+This is the original Optuna TPE search. Production runs use the deterministic
+LP (``solver.yaml → solver.engine: pyomo``, the default). This path is retained
+only as a cross-check reference and is reachable via ``engine: optuna``.
+It requires the optional ``optuna`` dependency (``pip install -e ".[legacy]"``).
+Do not add new features here — extend ``hybrid_plant.optimise`` instead.
+
 Optimisation layer — wraps Optuna TPE to search the decision-variable space
 defined in ``solver.yaml``.
 
