@@ -48,11 +48,16 @@ def finance_engine(config, data):
 
 @pytest.fixture(scope="module")
 def solver_result(config, data, energy_engine, finance_engine):
-    # 200 trials is enough for TPE to find feasible regions reliably in this
-    # 6-dim search space. 50 trials was too few — TPE's early exploration can
-    # fail to land in positive-NPV territory with fixed seed=42.
+    # Trial budget has been raised twice as the search space widened: 50 -> 200
+    # (TPE's early exploration missed positive-NPV territory at seed=42), then
+    # 200 -> 800 when wind was re-enabled in solver.yaml. With wind bounded to
+    # 0 the space is narrow enough that 200 sufficed; with both generation
+    # sources live, 200 trials returns n_trials_feasible=0 while 800 finds ~428.
+    # This budget sensitivity is a property of the deprecated TPE search, not of
+    # the model — the Pyomo LP solves the same problem exactly. See the legacy
+    # note in hybrid_plant.legacy.
     solver = SolverEngine(_config_no_penalty(config), data, energy_engine, finance_engine)
-    return solver.run(n_trials=200, show_progress=False)
+    return solver.run(n_trials=800, show_progress=False)
 
 
 @pytest.mark.slow
